@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trend Rider</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23141b21'/%3E%3Cpath d='M5 22 L12 15 L17 19 L27 8' stroke='%2366a3ff' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" class="brand-bg"/><path d="M5 22 L12 15 L17 19 L27 8" class="brand-line"/></svg>
+      <span>Trend Rider</span>
+    </div>
+    <span id="modePill" class="pill pill-paper">Paper money</span>
+    <span id="statusChip" class="status"><span class="dot"></span><span id="statusText">Starting…</span></span>
+    <div class="top-actions">
+      <button id="btnCheck" class="btn btn-ghost" title="Re-check the signals now. Trades only if the target changed.">Check now</button>
+      <button id="btnPause" class="btn btn-ghost">Pause bot</button>
+    </div>
+  </div>
+  <nav class="tabs" aria-label="Sections">
+    <a href="#dashboard" data-view="dashboard" class="tab">Dashboard</a>
+    <a href="#backtest" data-view="backtest" class="tab">Backtest</a>
+    <a href="#research" data-view="research" class="tab">How it was tested</a>
+    <a href="#settings" data-view="settings" class="tab">Settings</a>
+  </nav>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main>
+<!-- ============================== DASHBOARD -->
+<section id="view-dashboard" class="view">
+  <div class="score">
+    <div class="tile tile-hero">
+      <div class="label">Bot portfolio <span class="key key-bot"></span></div>
+      <div class="value" id="vBot">—</div>
+      <div class="sub" id="vBotSub">&nbsp;</div>
+    </div>
+    <div class="tile">
+      <div class="label">If you had just held <span class="key key-hold"></span></div>
+      <div class="value" id="vHold">—</div>
+      <div class="sub" id="vHoldSub">&nbsp;</div>
+    </div>
+    <div class="tile">
+      <div class="label">Bot vs. just holding</div>
+      <div class="value" id="vDiff">—</div>
+      <div class="sub" id="vDiffSub">&nbsp;</div>
+    </div>
+    <div class="tile">
+      <div class="label">Invested right now</div>
+      <div class="value" id="vInvested">—</div>
+      <div class="meter"><div id="vInvestedBar"></div></div>
+      <div class="sub" id="vCash">&nbsp;</div>
+    </div>
+  </div>
+
+  <div class="grid-main">
+    <div class="card card-chart">
+      <div class="card-head">
+        <div class="seg" id="coinTabs" role="tablist" aria-label="Coin"></div>
+        <div class="price-now"><span id="pxNow">—</span><span id="pxChg" class="chg"></span></div>
+        <div class="seg" id="tfTabs" role="tablist" aria-label="Timeframe">
+          <button data-tf="1d" class="on">Daily</button><button data-tf="1h">Hourly</button>
+        </div>
+      </div>
+      <div id="priceChart" class="chart"></div>
+      <div class="chart-foot">
+        <span><span class="mk mk-buy"></span>Bot bought</span><span><span class="mk mk-sell"></span>Bot sold</span>
+        <span class="muted" id="chartNote">Candles from Coinbase. Times in your time zone.</span>
+      </div>
+    </div>
+
+    <div class="card card-brain">
+      <div class="card-head"><h2>What the bot thinks</h2><div class="chips"><span class="chip" id="regimeChip">Regime —</span><span class="chip" id="fngChip">Fear &amp; Greed —</span></div></div>
+      <div class="brain-top">
+        <div class="ring"><svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="50" class="ring-track"/><circle id="ringFill" cx="60" cy="60" r="50" class="ring-fill" stroke-dasharray="0 314.16"/></svg>
+          <div class="ring-label"><span id="tgtPct">—</span><small>target</small></div></div>
+        <div class="brain-text">
+          <div class="brain-coin" id="brainCoin">Bitcoin</div>
+          <p id="brainSentence" class="brain-sentence">Loading signals…</p>
+          <p class="muted small" id="brainPreview"></p>
+        </div>
+      </div>
+      <ul class="votes" id="votes"></ul>
+      <div class="brain-foot">
+        <div><span class="muted">Strategy</span><b id="stratName">—</b></div>
+        <div><span class="muted">Last decision</span><b id="lastDecision">—</b></div>
+        <div><span class="muted">Next decision</span><b id="nextDecision">—</b></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head"><h2>Bot vs. just holding</h2><span class="muted small" id="eqSince"></span></div>
+      <div id="equityChart" class="chart chart-sm"></div>
+      <div class="chart-foot"><span><span class="key key-bot"></span>Bot</span><span><span class="key key-hold"></span>Just hold (bought once at the start)</span><span id="liveKey" hidden><span class="key key-live"></span>Live account</span></div>
+    </div>
+    <div class="card">
+      <h2>Holdings</h2>
+      <div class="table-wrap"><table class="tbl" id="posTable">
+        <thead><tr><th>Coin</th><th class="r">Amount</th><th class="r">Price</th><th class="r">Value</th><th class="r">Target</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <div id="livePanel" hidden>
+        <h3>Live Kraken account (bot budget)</h3>
+        <div class="kv"><span>Value</span><b id="liveValue">—</b></div>
+        <div class="kv"><span>Cash left in budget</span><b id="liveCash">—</b></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head"><h2>Trades</h2><span class="muted small" id="tradeCount"></span></div>
+      <div class="table-wrap tall"><table class="tbl" id="tradeTable">
+        <thead><tr><th>When</th><th>Action</th><th class="r">Amount</th><th class="r">Price</th><th class="r">Value</th><th class="r">Fee</th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+      <p class="empty" id="noTrades" hidden>No trades yet. The bot trades only when its daily signals change.</p>
+    </div>
+    <div class="card">
+      <h2>Activity</h2>
+      <ol class="log" id="log"></ol>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head"><h2>Strategy race</h2><span class="muted small">Every strategy on your coins, with your fees</span></div>
+      <div class="table-wrap"><table class="tbl" id="raceTable"></table></div>
+      <p class="muted small">● = best over the last 12 months. "Since you started" is the clean test: none of this data existed when the strategies were designed. Simulated from daily closes, so it can differ slightly from your actual paper trades.</p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>News</h2><span class="muted small">For your eyes only: the bot does not trade on headlines</span></div>
+      <ol class="news" id="news"><li class="muted">Loading headlines…</li></ol>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><h2>Market</h2><span class="muted small">Last 24 hours on Coinbase</span></div>
+    <div class="market" id="market"></div>
+  </div>
+</section>
+
+<!-- ============================== BACKTEST -->
+<section id="view-backtest" class="view" hidden>
+  <div class="card">
+    <h2>Test the strategies on past prices</h2>
+    <p class="muted">Runs every strategy on Coinbase daily prices with your fee, and compares them with simply buying once and holding. Past results do not predict future results.</p>
+    <form id="btForm" class="form-row">
+      <label>Coin <select id="btCoin"></select></label>
+      <label>Period <select id="btYears"><option value="1">1 year</option><option value="2">2 years</option><option value="3">3 years</option><option value="5" selected>5 years</option><option value="8">8 years</option><option value="12">All available</option></select></label>
+      <label>Fee per trade (%) <input id="btFee" type="number" min="0" max="2" step="0.05" value="0.4"></label>
+      <label>Always invested at least (%) <input id="btFloor" type="number" min="0" max="100" step="10" value="0"></label>
+      <button class="btn btn-primary" id="btRun" type="submit">Run backtest</button>
+    </form>
+  </div>
+  <div id="btOut" hidden>
+    <div class="card">
+      <div class="card-head"><h2 id="btTitle">Results</h2><span class="muted small">Log scale: each grid step is the same % change</span></div>
+      <div id="btChart" class="chart"></div>
+      <div class="chart-foot" id="btLegend"></div>
+    </div>
+    <div class="grid-2">
+      <div class="card"><h2>Summary</h2><div class="table-wrap"><table class="tbl" id="btStats"></table></div></div>
+      <div class="card"><h2>Year by year</h2><div class="table-wrap"><table class="tbl" id="btYearly"></table></div></div>
+    </div>
+  </div>
+  <p class="empty" id="btMsg" hidden></p>
+</section>
+
+<!-- ============================== RESEARCH -->
+<section id="view-research" class="view" hidden>
+  <div class="card prose" id="research"></div>
+</section>
+
+<!-- ============================== SETTINGS -->
+<section id="view-settings" class="view" hidden>
+  <div class="grid-2">
+    <div class="card">
+      <h2>Strategy</h2>
+      <div class="choice" id="stratChoice">
+        <label class="opt"><input type="radio" name="strategy" value="growth"><div><b>Growth</b><span>Five moving-average signals vote on how much to invest (0–100% in 20% steps). Best long-run results in testing. Bigger swings.</span></div></label>
+        <label class="opt"><input type="radio" name="strategy" value="steady"><div><b>Steady</b><span>Sixteen trend checks vote, and it invests less when the market gets extra jumpy. Smallest crashes in testing; a bit lower returns.</span></div></label>
+        <label class="opt"><input type="radio" name="strategy" value="auto"><div><b>Auto</b><span>Reads the market: Growth in up and sideways markets, switches to Steady in a confirmed downtrend, and buys at least 60% when the Fear &amp; Greed index shows extreme fear outside a downtrend. Smaller crashes than Growth in testing; similar returns.</span></div></label>
+        <label class="opt"><input type="radio" name="strategy" value="mix"><div><b>Mix two strategies</b><span>Splits the money between two strategies. Trades are combined, so when one buys and the other sells, nothing is traded and no fee is paid.</span>
+          <div class="mix-row">
+            <span class="pct"><input id="mixPct" type="number" min="10" max="90" step="10" value="50" aria-label="Percent in the first strategy">%</span>
+            <select id="mixA" aria-label="First strategy"></select>
+            <span class="muted">+ the rest in</span>
+            <select id="mixB" aria-label="Second strategy"></select>
+          </div></div></label>
+        <label class="opt"><input type="radio" name="strategy" value="hold"><div><b>Just hold</b><span>Buys once and never sells. Useful to compare.</span></div></label>
+      </div>
+      <h3>Coins the bot trades</h3>
+      <p class="muted small">Money is split evenly. Bitcoin + Ethereum together did best over 2017–2026 (see How it was tested). Smaller coins have short histories; check them in Backtest first.</p>
+      <div class="checks" id="coinChecks"></div>
+      <h3>Trading costs and rules</h3>
+      <div class="form-grid">
+        <label>Fee per trade (%) <input id="sFee" type="number" min="0" max="2" step="0.05"></label>
+        <label>Slippage (%) <input id="sSlip" type="number" min="0" max="1" step="0.01"></label>
+        <label>Always invested at least (%) <input id="sFloor" type="number" min="0" max="100" step="10"></label>
+        <label>Ignore drifts under (%) <input id="sBand" type="number" min="1" max="25" step="1"></label>
+      </div>
+      <label class="inline-check"><input type="checkbox" id="sNotify"> Show a Mac notification when the bot trades</label>
+      <p class="muted small">"Always invested at least" mixes the bot with plain holding. At 50%, half your money always stays in and the bot steers the other half.</p>
+      <button class="btn btn-primary" id="saveSettings">Save settings</button>
+      <span class="saved" id="savedMsg" hidden>Saved</span>
+    </div>
+
+    <div class="card">
+      <h2>Paper account</h2>
+      <p class="muted">Paper trading uses real live prices and pretend money, so you can see how the bot really behaves without risking anything.</p>
+      <div class="form-row">
+        <label>Starting cash ($) <input id="sCash" type="number" min="100" step="100"></label>
+        <button class="btn btn-ghost" id="resetBtn" type="button">Start over…</button>
+      </div>
+      <div class="confirm" id="resetConfirm" hidden>
+        <p>This erases the paper trades and the comparison so far. Continue?</p>
+        <button class="btn btn-danger" id="resetYes">Yes, start over</button> <button class="btn btn-ghost" id="resetNo">Cancel</button>
+      </div>
+
+      <h2 class="mt">Keep running in the background</h2>
+      <p class="muted">Normally the bot runs while the Trend Rider window in Terminal is open. Background mode keeps it running with no window and starts it again when you log in. Your Mac still pauses it while asleep; the bot catches up when it wakes.</p>
+      <div id="bgBox"></div>
+
+      <h2 class="mt">Stop Trend Rider</h2>
+      <p class="muted">Stops the bot and the dashboard until you open Trend Rider again. Nothing is sold.</p>
+      <div><button class="btn btn-ghost" id="quitBtn" type="button">Stop Trend Rider…</button></div>
+      <div class="confirm" id="quitConfirm" hidden>
+        <p>While stopped, the bot makes no decisions. Your paper account is saved. Stop now?</p>
+        <button class="btn btn-danger" id="quitYes">Stop</button> <button class="btn btn-ghost" id="quitNo">Cancel</button>
+      </div>
+
+      <h2 class="mt">Live trading with Kraken <span class="pill pill-beta">Beta</span></h2>
+      <div class="warn-box">
+        <p><b>Real money can be lost.</b> In testing on 2023–2026 prices, this bot made <b>less</b> than just holding (+195% vs +383%), while losing less in crashes. No bot can promise a profit. Run paper trading for at least a month first, and only use money you can afford to lose. You must be 18 or older to use an exchange.</p>
+      </div>
+      <div id="liveBox"></div>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="foot">
+  <span>Trend Rider <span id="ver"></span> · <span id="footWhere">runs only on this Mac</span> · not financial advice</span>
+  <span>Prices: Coinbase (backup: Kraken) · Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a></span>
+</footer>
+
+<script src="/vendor/lightweight-charts.standalone.production.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

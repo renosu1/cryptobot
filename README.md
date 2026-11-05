@@ -1,0 +1,12 @@
+# Trend Rider
+
+A crypto dashboard and swing-trading bot. This repository runs it **on GitHub's servers**, so it keeps going when your computer is off.
+
+- **Dashboard:** the GitHub Pages site for this repository (Settings → Pages shows the link).
+- **The bot** runs four times a day (`.github/workflows/bot.yml`). The daily decision happens on the first run after 00:00 UTC. Results are saved in `data/`.
+- **Settings:** edit [`data/config.json`](data/config.json) and commit. Run it right away from the **Actions** tab → *Trend Rider bot* → *Run workflow*.
+- **Paper money by default.** Real-money trading with Kraken is off unless you add the `KRAKEN_API_KEY` and `KRAKEN_API_SECRET` secrets *and* set `"enabled": true, "confirm": "REAL MONEY"` under `"live"` in the config. This repository is public, so real trades would be visible to anyone.
+
+How the strategies were built and tested: the dashboard's *How it was tested* tab, and the `research/` folder in the Mac version.
+
+Not financial advice. No strategy can promise a profit; in testing on 2023–2026 prices it made less than simply holding, while falling less in crashes.

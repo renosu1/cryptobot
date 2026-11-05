@@ -1,0 +1,38 @@
+name: Trend Rider bot
+
+on:
+  schedule:
+    # four times a day; the daily decision happens on the first run after 00:00 UTC
+    - cron: '17 0,6,12,18 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trend-rider
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run the bot
+        env:
+          KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
+          KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+        run: python cloud/run.py
+      - name: Save results
+        run: |
+          git config user.name "trend-rider-bot"
+          git config user.email "trend-rider-bot@users.noreply.github.com"
+          git add data index.html
+          if git diff --cached --quiet; then echo "nothing to save"; exit 0; fi
+          git commit -m "Bot update $(date -u +'%Y-%m-%d %H:%M UTC')"
+          for i in 1 2 3; do git push && exit 0; git pull --rebase; done
+          exit 1
