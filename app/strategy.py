@@ -121,7 +121,7 @@ def growth_series(closes):
     return expo, votes
 
 
-def steady_series(highs, lows, closes, target_vol=0.8):
+def steady_series(highs, lows, closes, target_vol=0.8, ann=365):
     parts, names = [], []
     for n in STEADY_LOOKBACKS:
         m = sma(closes, n)
@@ -135,7 +135,7 @@ def steady_series(highs, lows, closes, target_vol=0.8):
         names.append(f'Up over the last {n} days')
         parts.append(donchian(highs, lows, closes, n, n // 2))
         names.append(f'{n}-day breakout')
-    rv = realized_vol(closes)
+    rv = realized_vol(closes, ann=ann)
     expo = []
     for i in range(len(closes)):
         raw = sum(p[i] for p in parts) / len(parts)
@@ -165,9 +165,9 @@ def regime_series(closes):
     return out
 
 
-def auto_series(highs, lows, closes, fng=None):
+def auto_series(highs, lows, closes, fng=None, ann=365):
     g, gv = growth_series(closes)
-    st, sv = steady_series(highs, lows, closes)
+    st, sv = steady_series(highs, lows, closes, ann=ann)
     reg = regime_series(closes)
     expo = []
     for i in range(len(closes)):
@@ -188,19 +188,20 @@ def auto_series(highs, lows, closes, fng=None):
     return expo, votes
 
 
-def exposure_series(strategy, highs, lows, closes, fng=None, mix=None):
+def exposure_series(strategy, highs, lows, closes, fng=None, mix=None, ann=365):
+    """ann = trading days per year: 365 for crypto, 252 for stocks (only used for volatility)."""
     if strategy == 'growth':
         return growth_series(closes)
     if strategy == 'steady':
-        return steady_series(highs, lows, closes)
+        return steady_series(highs, lows, closes, ann=ann)
     if strategy == 'auto':
-        return auto_series(highs, lows, closes, fng)
+        return auto_series(highs, lows, closes, fng, ann)
     if strategy == 'mix':
         mix = mix or {}
         a, b = mix.get('a', 'auto'), mix.get('b', 'steady')
         w = max(0.0, min(1.0, float(mix.get('a_pct', 50)) / 100))
-        ea, va = exposure_series(a, highs, lows, closes, fng)
-        eb, vb = exposure_series(b, highs, lows, closes, fng)
+        ea, va = exposure_series(a, highs, lows, closes, fng, ann=ann)
+        eb, vb = exposure_series(b, highs, lows, closes, fng, ann=ann)
         expo = [quantize(w * x + (1 - w) * y, 0.05) for x, y in zip(ea, eb)]
         votes = [{'name': f'{w * 100:.0f}% {STRATEGIES[a]}', 'up': None, 'detail': f'wants {ea[-1] * 100:.0f}% in'},
                  {'name': f'{(1 - w) * 100:.0f}% {STRATEGIES[b]}', 'up': None, 'detail': f'wants {eb[-1] * 100:.0f}% in'}]
@@ -214,10 +215,10 @@ def apply_floor(x, floor):
 
 
 # ---------------------------------------------------------------- backtest
-def backtest(times, highs, lows, closes, strategy, cost=0.0045, floor=0.0, start_index=None, fng=None, mix=None):
+def backtest(times, highs, lows, closes, strategy, cost=0.0045, floor=0.0, start_index=None, fng=None, mix=None, ann=365):
     """Same accounting as the research: decide at the close, hold over the next
     day, pay `cost` per unit of position change. Returns curves and stats."""
-    expo, _ = exposure_series(strategy, highs, lows, closes, fng, mix)
+    expo, _ = exposure_series(strategy, highs, lows, closes, fng, mix, ann)
     expo = [apply_floor(e, floor) for e in expo]
     s = MIN_BARS if start_index is None else start_index
     s = min(max(1, s), len(closes) - 1)
@@ -239,10 +240,10 @@ def backtest(times, highs, lows, closes, strategy, cost=0.0045, floor=0.0, start
         pos_hist.append(pos_today)
     t = times[s - 1:]
     return {'times': t, 'equity': eq, 'hold': hold, 'exposure': [expo[s - 1]] + pos_hist,
-            'stats': stats(t, eq), 'hold_stats': stats(t, hold), 'trades': trades}
+            'stats': stats(t, eq, ann), 'hold_stats': stats(t, hold, ann), 'trades': trades}
 
 
-def stats(times, eq):
+def stats(times, eq, ann=365):
     if len(eq) < 3:
         return {}
     rets = [eq[i] / eq[i - 1] - 1 for i in range(1, len(eq))]
@@ -250,7 +251,7 @@ def stats(times, eq):
     cagr = (eq[-1] / eq[0]) ** (1 / years) - 1
     m = sum(rets) / len(rets)
     sd = math.sqrt(sum((r - m) ** 2 for r in rets) / (len(rets) - 1)) if len(rets) > 1 else 0
-    sharpe = m / sd * math.sqrt(365) if sd > 0 else 0
+    sharpe = m / sd * math.sqrt(ann) if sd > 0 else 0
     peak, mdd = eq[0], 0.0
     for v in eq:
         peak = max(peak, v)

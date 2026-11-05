@@ -51,29 +51,26 @@ def build_index():
         f.write(src)
 
 
-def main():
-    t0 = time.time()
-    server.ensure_dirs()
-    os.makedirs(DATA, exist_ok=True)
-    if not os.path.exists(os.path.join(DATA, 'config.json')):
-        cfg = json.loads(json.dumps(server.DEFAULT_CONFIG))
-        cfg['live'] = {'enabled': False, 'confirm': '', 'budget_usd': 100.0, 'max_trade_usd': 100.0}
-        cfg.pop('port', None)
-        write(os.path.join(DATA, 'config.json'), cfg)
-    bot = server.Bot()
-    server.BOT = bot
-    M = server.MARKET
-    for c in bot.cfg['coins']:
-        M.refresh_price(c)
-    for c in server.COINS:
-        try:
-            M.refresh_stats(c)
-        except Exception as e:
-            M.errors['stats'] = str(e)
-        time.sleep(0.15)
-    M.load_fng()
+def run_market(bot, t0):
+    """One pass for one account (crypto or stocks). Returns its dashboard snapshot."""
+    M = bot.M
+    sfx = '' if bot.market == 'crypto' else '_stocks'
+    if bot.market == 'crypto':
+        for c in bot.cfg['coins']:
+            M.refresh_price(c)
+        for c in server.COINS:
+            try:
+                M.refresh_stats(c)
+            except Exception as e:
+                M.errors['stats'] = str(e)
+            time.sleep(0.15)
+        M.load_fng()
+    else:
+        for c in bot.universe():
+            M.refresh_price(c)
+            time.sleep(0.3)
 
-    # first live run: the bot's real-money budget starts as cash
+    # first live run: the bot's real-money budget starts as cash (crypto only)
     if bot.live_on() and not bot.state['live'].get('started'):
         budget = float(bot.cfg['live'].get('budget_usd', 0))
         bal = bot.kraken.balances()
@@ -85,7 +82,7 @@ def main():
             bot.log(f'LIVE trading NOT started: Kraken has ${usd:,.2f} USD, budget is ${budget:,.2f} (minimum $20).', 'error')
             bot.cfg['live']['enabled'] = False
 
-    if bot.due() and (time.time() % DAY) > 90:
+    if bot.due() and (bot.market != 'crypto' or (time.time() % DAY) > 90):
         bot.decide('Daily decision')
     else:
         bot.signal = {c: bot.compute_signal(c) for c in bot.cfg['coins']}
@@ -94,23 +91,31 @@ def main():
     bot.race()
     bot.save()
 
-    news = M.load_news()
-    write(os.path.join(DATA, 'news.json'), news)
+    write(os.path.join(DATA, f'news{sfx}.json'), M.load_news())
 
-    # backtests for the dashboard's Backtest tab (refreshed once a day)
-    meta_path = os.path.join(DATA, 'backtest', 'meta.json')
+    if bot.market != 'crypto':  # the web page can't fetch stock prices itself, so save recent candles
+        for c in bot.universe():
+            try:
+                write(os.path.join(DATA, 'candles', f'{c}.json'), {'daily': [[r[0]] + [float(f'{v:.6g}') for v in r[1:]] for r in M.load_daily(c)[-300:]]})
+            except Exception as e:
+                print('candles failed', c, e)
+
+    # backtests for the dashboard's Backtest tab (refreshed weekly or when settings change)
+    prefix = '' if bot.market == 'crypto' else 'stocks_'
+    meta_path = os.path.join(DATA, 'backtest', f'{prefix}meta.json')
     meta = server.read_json(meta_path, {})
-    if time.time() - meta.get('ts', 0) > 7 * DAY - 3600 or meta.get('coins') != bot.cfg['coins'] or meta.get('strategy') != bot.cfg['strategy']:
+    key = [bot.cfg['coins'], bot.cfg['strategy'], bot.cfg.get('mix'), bot.cfg['fee_pct'], bot.cfg['min_invested_pct']]
+    if time.time() - meta.get('ts', 0) > 7 * DAY - 3600 or meta.get('key') != key:
         names = ['growth', 'steady', 'auto'] + (['mix'] if bot.cfg['strategy'] == 'mix' else [])
         for coin in bot.cfg['coins']:
             for years in (1, 3, 5, 12):
                 try:
-                    runs = [slim(server.run_backtest(coin, s, years, float(bot.cfg['fee_pct']), float(bot.cfg['min_invested_pct']), bot.cfg.get('mix')),
+                    runs = [slim(server.run_backtest(coin, s, years, float(bot.cfg['fee_pct']), float(bot.cfg['min_invested_pct']), bot.cfg.get('mix'), bot),
                                  server.strategy_label(dict(bot.cfg, strategy=s))) for s in names]
-                    write(os.path.join(DATA, 'backtest', f'{coin}_{years}.json'), {'runs': runs})
+                    write(os.path.join(DATA, 'backtest', f'{prefix}{coin}_{years}.json'), {'runs': runs})
                 except Exception as e:
-                    print('backtest failed', coin, years, e)
-        write(meta_path, {'ts': time.time(), 'coins': bot.cfg['coins'], 'strategy': bot.cfg['strategy']})
+                    print('backtest failed', bot.market, coin, years, e)
+        write(meta_path, {'ts': time.time(), 'key': key})
 
     snap = bot.snapshot()
     snap['cloud'] = {'run_ts': time.time(), 'run_seconds': round(time.time() - t0, 1),
@@ -118,9 +123,41 @@ def main():
     snap['raw'] = {'holdings': bot.state['holdings'], 'hold_qty': bot.state.get('hold_qty', {}),
                    'hold_cash': bot.state.get('hold_cash', 0.0)}
     snap['background'] = {'supported': False, 'installed': False}
-    write(os.path.join(DATA, 'dashboard.json'), snap)
+    write(os.path.join(DATA, f'dashboard{sfx}.json'), snap)
+    return snap
+
+
+def main():
+    t0 = time.time()
+    server.ensure_dirs()
+    os.makedirs(DATA, exist_ok=True)
+    if not os.path.exists(os.path.join(DATA, 'config.json')):
+        cfg = json.loads(json.dumps(server.DEFAULT_CONFIG))
+        cfg['live'] = {'enabled': False, 'confirm': '', 'budget_usd': 100.0, 'max_trade_usd': 100.0}
+        cfg.pop('port', None)
+        write(os.path.join(DATA, 'config.json'), cfg)
+    server.CFG = server.load_config()
+    if 'stocks' not in server.read_json(os.path.join(DATA, 'config.json'), {}):
+        full = server.read_json(os.path.join(DATA, 'config.json'), {})
+        full['stocks'] = server.CFG['stocks']
+        with open(os.path.join(DATA, 'config.json'), 'w') as f:
+            json.dump(full, f, indent=2)
+    crypto = server.Bot('crypto')
+    stocks = server.Bot('stocks')
+    server.BOT = crypto
+    server.BOTS = {'crypto': crypto, 'stocks': stocks}
+    failures = []
+    for bot in (crypto, stocks):
+        try:
+            snap = run_market(bot, t0)
+            print(f"{bot.market}: equity {snap['equity']} · hold {snap['hold_equity']} · errors {snap['errors']}")
+        except Exception:
+            traceback.print_exc()
+            failures.append(bot.market)
     build_index()
-    print(f"done in {time.time() - t0:.1f}s · equity {snap['equity']} · hold {snap['hold_equity']} · errors {snap['errors']}")
+    print(f'done in {time.time() - t0:.1f}s')
+    if failures:
+        sys.exit(1)
 
 
 if __name__ == '__main__':

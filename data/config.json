@@ -19,5 +19,26 @@
     "confirm": "",
     "budget_usd": 100.0,
     "max_trade_usd": 100.0
+  },
+  "stocks": {
+    "coins": [
+      "SPY",
+      "QQQ"
+    ],
+    "custom": [],
+    "strategy": "growth",
+    "mix": {
+      "a": "auto",
+      "b": "hold",
+      "a_pct": 50
+    },
+    "starting_cash": 10000.0,
+    "fee_pct": 0.0,
+    "slippage_pct": 0.05,
+    "min_invested_pct": 0,
+    "rebalance_band_pct": 5,
+    "live": {
+      "enabled": false
+    }
   }
 }

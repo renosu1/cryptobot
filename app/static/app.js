@@ -11,6 +11,9 @@
   let candleCache = {};      // key -> {t, rows}
   let lastTradeSig = '';
   let charts = {};
+  let market = 'crypto';
+  try { market = localStorage.getItem('tr-market') === 'stocks' ? 'stocks' : 'crypto'; } catch (e) { /* ignore */ }
+  const STOCKS = () => market === 'stocks';
 
   const CLOUD = !!window.TREND_RIDER_CLOUD;
   const CB = 'https://api.exchange.coinbase.com';
@@ -18,6 +21,8 @@
 
   // ------------------------------------------------------------ helpers
   async function api(path, body) {
+    if (body === undefined) path += (path.includes('?') ? '&' : '?') + 'market=' + market;
+    else body = Object.assign({ market }, body);
     if (CLOUD) return cloudApi(path, body);
     const opt = body === undefined ? {} : {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'X-TrendRider': '1' }, body: JSON.stringify(body)
@@ -74,38 +79,40 @@
     const u = new URL(path, location.origin);
     const q = Object.fromEntries(u.searchParams);
     if (u.pathname === '/api/state') return cloudState();
-    if (u.pathname === '/api/news') return getJSON('data/news.json?t=' + Date.now());
+    const sfx = STOCKS() ? '_stocks' : '';
+    if (u.pathname === '/api/news') return getJSON(`data/news${sfx}.json?t=` + Date.now());
     if (u.pathname === '/api/research') return getJSON('app/research.json');
     if (u.pathname === '/api/backtest') {
       const y = [1, 3, 5, 12].reduce((a, b) => Math.abs(b - +q.years) < Math.abs(a - +q.years) ? b : a, 5);
-      return getJSON(`data/backtest/${q.coin}_${y}.json?t=${Math.floor(Date.now() / 3.6e6)}`);
+      return getJSON(`data/backtest/${STOCKS() ? 'stocks_' : ''}${q.coin}_${y}.json?t=${Math.floor(Date.now() / 3.6e6)}`);
     }
     if (u.pathname === '/api/candles') {
+      if (STOCKS()) { const c = await getJSON(`data/candles/${q.coin}.json?t=${Math.floor(Date.now() / 6e5)}`); return { coin: q.coin, rows: q.tf === '1h' ? c.daily.slice(-60) : c.daily }; }
       const g = q.tf === '1h' ? 3600 : 86400;
       const rows = await getJSON(`${CB}/products/${q.coin}-USD/candles?granularity=${g}`);
       return { coin: q.coin, rows: rows.map((r) => [r[0], r[3], r[2], r[1], r[4], r[5]]).sort((a, b) => a[0] - b[0]) };
     }
     throw new Error('Not available in the cloud version.');
   }
+  let dashMarket = null;
   async function cloudState() {
-    if (!dash || Date.now() - dashAt > 120000) {
-      dash = await getJSON('data/dashboard.json?t=' + Date.now());
-      dashAt = Date.now();
+    if (!dash || Date.now() - dashAt > 120000 || dashMarket !== market) {
+      dash = await getJSON(`data/dashboard${STOCKS() ? '_stocks' : ''}.json?t=` + Date.now());
+      dashAt = Date.now(); dashMarket = market;
     }
     const s = JSON.parse(JSON.stringify(dash));
-    const coins = s.config.coins;
+    const coins = STOCKS() ? [] : s.config.coins;   // stock prices can't be fetched from a browser; use the bot's last run
     await Promise.all(coins.map(async (c) => {
       try { const t = await getJSON(`${CB}/products/${c}-USD/ticker`); livePrices[c] = { price: +t.price, ts: Date.now() / 1000, src: 'Coinbase' }; delete cloudErrors.price; }
       catch (e) { cloudErrors.price = 'Live prices unavailable in this browser right now (' + e.message + ').'; }
     }));
-    if (Date.now() - liveStatsAt > 60000) {
+    if (!STOCKS() && Date.now() - liveStatsAt > 60000) {
       liveStatsAt = Date.now();
       await Promise.all(Object.keys(s.coins).map(async (c) => {
         try { const t = await getJSON(`${CB}/products/${c}-USD/stats`); liveStats[c] = { open: +t.open, high: +t.high, low: +t.low, last: +t.last }; } catch (e) { /* keep saved stats */ }
       }));
     }
-    Object.assign(s.prices, livePrices);
-    Object.assign(s.stats, liveStats);
+    if (!STOCKS()) { Object.assign(s.prices, livePrices); Object.assign(s.stats, liveStats); }
     const px = (c) => (s.prices[c] || {}).price;
     const raw = s.raw || { holdings: {}, hold_qty: {}, hold_cash: 0 };
     s.equity = s.cash + Object.entries(raw.holdings).reduce((a, [c, q]) => a + q * (px(c) || 0), 0);
@@ -113,10 +120,11 @@
     s.positions.forEach((p) => { p.price = px(p.coin); p.value = p.qty * (p.price || 0); });
     if (s.live_on) s.live.equity = s.live.cash + Object.entries(s.live.holdings || {}).reduce((a, [c, q]) => a + q * (px(c) || 0), 0);
     s.now = Date.now() / 1000;
-    s.next_decision = (Math.floor(s.now / DAY) + 1) * DAY + 17 * 60;
+    if (!STOCKS()) s.next_decision = (Math.floor(s.now / DAY) + 1) * DAY + 17 * 60;
+    else if (s.next_decision < s.now) s.next_decision = s.now + 3600;
     s.errors = Object.assign({}, s.errors, cloudErrors);
     const age = s.now - s.cloud.run_ts;
-    if (age > 8 * 3600) s.errors.stale = `The cloud bot last ran ${dur(age)} ago (it normally runs every 6 hours). Check the Actions tab on GitHub.`;
+    if (age > (STOCKS() ? 30 : 8) * 3600) s.errors.stale = `The cloud bot last ran ${dur(age)} ago (it normally runs every 6 hours). Check the Actions tab on GitHub.`;
     return s;
   }
   function renderCloudChrome() {
@@ -150,9 +158,9 @@
         <div class="kv"><span>Always invested at least</span><b>${c.min_invested_pct}%</b></div>
         <div class="kv"><span>Starting cash</span><b>${usd(c.starting_cash, 0)}</b></div>
         <div class="stack"><div><a class="btn btn-primary" href="${gh('edit/main/data/config.json')}" target="_blank" rel="noopener">Edit settings on GitHub</a> <a class="btn btn-ghost" href="${gh('actions/workflows/bot.yml')}" target="_blank" rel="noopener">Run the bot now</a></div>
-        <p class="small muted">In the file: <code>"strategy"</code> can be <code>"growth"</code>, <code>"steady"</code>, <code>"auto"</code>, <code>"hold"</code> or <code>"mix"</code> (then set <code>"mix"</code>, for example <code>{"a": "auto", "b": "steady", "a_pct": 50}</code>). <code>"coins"</code> takes any of ${esc(Object.keys(S.coins).join(', '))}. Click "Commit changes" to save; the bot uses the new settings on its next run, or press "Run the bot now" and then "Run workflow".</p></div>
+        <p class="small muted">${STOCKS() ? 'The stocks account uses the <code>"stocks"</code> section of the file. ' : ''}In the file: <code>"strategy"</code> can be <code>"growth"</code>, <code>"steady"</code>, <code>"auto"</code>, <code>"hold"</code> or <code>"mix"</code> (then set <code>"mix"</code>, for example <code>{"a": "auto", "b": "steady", "a_pct": 50}</code>). <code>"coins"</code> takes ${STOCKS() ? 'any US stock or fund ticker, such as SPY, QQQ or AAPL' : 'any of ' + esc(Object.keys(S.coins).join(', '))}. Click "Commit changes" to save; the bot uses the new settings on its next run, or press "Run the bot now" and then "Run workflow".</p></div>
       </div>
-      <div class="card"><h2>Real money with Kraken <span class="pill ${S.live_on ? 'pill-live' : 'pill-beta'}">${S.live_on ? 'On' : 'Off'}</span></h2>
+      ${STOCKS() ? `<div class="card"><h2>Real money</h2><p class="muted">The stocks account is paper-only for now. In testing on 24 stock histories, trend rules cut the worst crashes but made less money than simply holding in every one.</p></div>` : `<div class="card"><h2>Real money with Kraken <span class="pill ${S.live_on ? 'pill-live' : 'pill-beta'}">${S.live_on ? 'On' : 'Off'}</span></h2>
         <div class="warn-box"><p><b>Real money can be lost.</b> In testing on 2023–2026 prices the bot made less than holding while losing less in crashes. Live trading has not been tested against a real Kraken account. Because this repository is public, the bot's real trades and balance would be visible to anyone. Paper-trade for at least a month first. You must be 18 or older.</p></div>
         <ol class="steps">
           <li>On kraken.com create an API key with only <b>Query funds</b>, <b>Query open orders &amp; trades</b>, <b>Query closed orders &amp; trades</b> and <b>Create &amp; modify orders</b>. Never allow withdrawals.</li>
@@ -160,7 +168,7 @@
           <li>In <a href="${gh('edit/main/data/config.json')}" target="_blank" rel="noopener">config.json</a> set <code>"live": {"enabled": true, "confirm": "REAL MONEY", "budget_usd": 100, "max_trade_usd": 100}</code>.</li>
         </ol>
         <p class="small muted">Currently: ${S.live_on ? `trading a ${usd(live.budget_usd, 0)} budget.` : S.has_keys ? 'keys found, live trading off.' : 'no Kraken keys saved.'} To stop, set <code>"enabled": false</code>; nothing is sold.</p>
-      </div></div>`;
+      </div>`}</div>`;
   }
 
   // ------------------------------------------------------------ routing
@@ -215,10 +223,14 @@
     const c = candleCache[key];
     if (!force && c && Date.now() - c.t < 60000) return drawCandles(c.rows);
     try {
+      const m = market;
       const j = await api(`/api/candles?coin=${coin}&tf=${tf}`);
+      if (m !== market || key !== coin + tf) return;
       candleCache[key] = { t: Date.now(), rows: j.rows };
       drawCandles(j.rows);
-      $('#chartNote').textContent = tf === '1d' ? 'Daily candles from Coinbase (UTC days). The bot decides once a day, right after 00:00 UTC.' : 'Hourly candles from Coinbase, in your time zone.';
+      $('#chartNote').textContent = STOCKS()
+        ? (tf === '1d' ? 'Daily prices from Yahoo Finance, adjusted for dividends. The bot decides once a day, just after the US market closes.' : 'Hourly prices from Yahoo Finance, in your time zone.')
+        : (tf === '1d' ? 'Daily candles from Coinbase (UTC days). The bot decides once a day, right after 00:00 UTC.' : 'Hourly candles from Coinbase, in your time zone.');
     } catch (e) {
       $('#chartNote').textContent = 'Could not load candles: ' + e.message;
     }
@@ -259,6 +271,19 @@
     $('#ver').textContent = 'v' + S.version;
     if (!coin || !cfg.coins.includes(coin)) { coin = cfg.coins[0]; loadCandles(true); }
 
+    // market switch + wording
+    $$('#marketTabs button').forEach((x) => x.classList.toggle('on', x.dataset.m === market));
+    $('#marketNote').textContent = STOCKS() ? `Today, from Yahoo Finance (may be delayed) · US market ${S.us_market_open ? 'open' : 'closed'}` : 'Last 24 hours on Coinbase';
+    $('#fngChip').hidden = STOCKS();
+    const setHidden = (sel, v) => { const el = $(sel); if (el) el.hidden = v; };
+    const setText = (sel, v) => { const el = $(sel); if (el) el.textContent = v; };
+    setHidden('#liveSection', STOCKS()); setHidden('#stockLiveNote', !STOCKS()); setHidden('#customBox', !STOCKS());
+    setText('#btIntro', STOCKS() ? 'Runs every strategy on daily prices from Yahoo Finance (dividends included) with your fee, and compares them with simply buying once and holding. Past results do not predict future results.' : 'Runs every strategy on Coinbase daily prices with your fee, and compares them with simply buying once and holding. Past results do not predict future results.');
+    setText('#btCoinLabel', STOCKS() ? 'Stock or fund' : 'Coin');
+    setText('#posHead', STOCKS() ? 'Stock' : 'Coin');
+    setText('#assetsHeading', STOCKS() ? 'Stocks and funds the bot trades' : 'Coins the bot trades');
+    setText('#assetsNote', STOCKS() ? 'Money is split evenly. Index funds hold hundreds of companies, so no single one can sink you. In testing, holding made more money than the bot on every stock and fund; the bot mainly cuts crash losses.' : 'Money is split evenly. Bitcoin + Ethereum together did best over 2017–2026 (see How it was tested). Smaller coins have short histories; check them in Backtest first.');
+
     // header
     const live = S.live_on;
     const pill = $('#modePill');
@@ -269,7 +294,7 @@
     const nextIn = S.next_decision - S.now;
     if (errs.length) { chip.className = 'status err'; $('#statusText').textContent = 'Connection problem'; }
     else if (S.paused) { chip.className = 'status paused'; $('#statusText').textContent = 'Paused: not trading'; }
-    else { chip.className = 'status ok'; $('#statusText').textContent = `Running · next decision in ${dur(nextIn)}`; }
+    else { chip.className = 'status ok'; $('#statusText').textContent = STOCKS() ? `Running · US market ${S.us_market_open ? 'open' : 'closed'} · next decision in ${dur(nextIn)}` : `Running · next decision in ${dur(nextIn)}`; }
     $('#btnPause').textContent = S.paused ? 'Resume bot' : 'Pause bot';
     const banner = $('#banner');
     if (errs.length) { banner.hidden = false; banner.textContent = errs[0] + ' The bot keeps retrying on its own.'; } else banner.hidden = true;
@@ -306,7 +331,7 @@
       const t0 = tf === '1d' ? r[0] : r[0] + tz();
       try { charts.candles.update({ time: t0, open: r[1], high: Math.max(r[2], px.price), low: Math.min(r[3], px.price), close: px.price }); } catch (e) { /* ignore */ }
     }
-    if (st && px) { const ch = px.price / st.open - 1; $('#pxChg').className = 'chg ' + cls(ch); $('#pxChg').textContent = pct(ch, 2) + ' 24h'; }
+    if (st && px) { const ch = px.price / st.open - 1; $('#pxChg').className = 'chg ' + cls(ch); $('#pxChg').textContent = pct(ch, 2) + (STOCKS() ? ' today' : ' 24h'); }
 
     renderBrain();
     renderEquity();
@@ -463,11 +488,11 @@
       settingsFilled = true;
       $$('input[name=strategy]').forEach((r) => { r.checked = r.value === cfg.strategy; });
       $('#coinChecks').innerHTML = Object.entries(S.coins).map(([c, n]) =>
-        `<label><input type="checkbox" value="${c}" ${cfg.coins.includes(c) ? 'checked' : ''}> ${c} <span class="muted">${esc(n)}</span></label>`).join('');
+        `<label><input type="checkbox" value="${c}" ${cfg.coins.includes(c) ? 'checked' : ''}> ${c} <span class="muted">${esc((S.index_funds && S.index_funds[c]) || n)}</span></label>`).join('');
       $('#sFee').value = cfg.fee_pct; $('#sSlip').value = cfg.slippage_pct; $('#sFloor').value = cfg.min_invested_pct;
       $('#sBand').value = cfg.rebalance_band_pct; $('#sCash').value = cfg.starting_cash; $('#sNotify').checked = cfg.notifications !== false;
       $('#btFee').value = cfg.fee_pct;
-      $('#btCoin').innerHTML = Object.entries(S.coins).map(([c, n]) => `<option value="${c}">${c} · ${esc(n)}</option>`).join('');
+      $('#btCoin').innerHTML = Object.entries(S.coins).map(([c, n]) => `<option value="${c}">${c} · ${esc((S.index_funds && S.index_funds[c]) || n)}</option>`).join('');
       const opts = Object.entries(S.mix_choices || {}).map(([k, n]) => `<option value="${k}">${esc(n)}</option>`).join('');
       $('#mixA').innerHTML = opts; $('#mixB').innerHTML = opts;
       const mx = cfg.mix || { a: 'auto', b: 'steady', a_pct: 50 };
@@ -506,6 +531,7 @@
   }
 
   function renderLive() {
+    if (STOCKS()) return;
     const box = $('#liveBox');
     const st = S.live_on ? 'on' : S.has_keys ? 'keys' : 'none';
     if (box.dataset.k === st) return;
@@ -555,7 +581,7 @@
     if (!CLOUD || btPrepared || !S) return;
     btPrepared = true;
     $('#btCoin').innerHTML = S.config.coins.map((c) => `<option value="${c}">${c} · ${esc(S.coins[c])}</option>`).join('');
-    $('#btYears').innerHTML = '<option value="1">1 year</option><option value="3">3 years</option><option value="5" selected>5 years</option><option value="12">All available</option>';
+    $('#btYears').innerHTML = `<option value="1">1 year</option><option value="3">3 years</option><option value="5" selected>5 years</option><option value="12">${STOCKS() ? '12 years' : 'All available'}</option>`;
     $('#btFee').value = S.config.fee_pct; $('#btFee').disabled = true;
     $('#btFloor').value = S.config.min_invested_pct; $('#btFloor').disabled = true;
     $('#btForm').insertAdjacentHTML('afterend', '<p class="small muted">Cloud version: results are prepared once a week (and whenever you change settings) for your coins, with your fee and settings.</p>');
@@ -607,7 +633,32 @@
   }
 
   // ------------------------------------------------------------ events
+  function switchMarket(m) {
+    if (m === market) return;
+    market = m;
+    try { localStorage.setItem('tr-market', m); } catch (e) { /* ignore */ }
+    S = null; coin = null; candleCache = {}; lastTradeSig = ''; settingsFilled = false; btPrepared = false; newsAt = 0;
+    $('#coinTabs').dataset.coins = ''; $('#btOut').hidden = true;
+    ['#viewSettingsKey'].forEach(() => {});
+    const vs = $('#view-settings'); if (vs) vs.dataset.k = '';
+    $('#votes').innerHTML = ''; $('#tradeTable tbody').innerHTML = ''; $('#log').innerHTML = ''; $('#market').innerHTML = '';
+    charts.candles.setData([]); charts.candles.setMarkers([]);
+    refresh().then(() => loadCandles(true));
+  }
+
   function bind() {
+    $('#marketTabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) switchMarket(b.dataset.m); });
+    $('#customAdd').onclick = async () => {
+      const t = ($('#customTicker').value || '').trim().toUpperCase();
+      if (!t) return;
+      const custom = [...new Set([...(S.config.custom || []), t])];
+      const coins = [...new Set([...$$('#coinChecks input:checked').map((i) => i.value), t])];
+      const msg = $('#savedMsg');
+      $('#customAdd').disabled = true; $('#customAdd').textContent = 'Checking…';
+      try { await api('/api/settings', { custom, coins }); $('#customTicker').value = ''; settingsFilled = false; msg.hidden = false; msg.className = 'saved'; msg.textContent = `Added ${t}.`; await refresh(); }
+      catch (e) { msg.hidden = false; msg.className = 'saved err-text'; msg.textContent = e.message; }
+      finally { $('#customAdd').disabled = false; $('#customAdd').textContent = 'Add'; }
+    };
     $('#coinTabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; coin = b.dataset.coin; render(); loadCandles(true); });
     $('#tfTabs').addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return; tf = b.dataset.tf;
@@ -645,11 +696,15 @@
   // ------------------------------------------------------------ loop
   let failures = 0;
   async function refresh() {
+    const m = market;
     try {
-      S = await api('/api/state');
+      const fresh = await api('/api/state');
+      if (m !== market) return;   // the user switched Crypto/Stocks while this was loading
+      S = fresh;
       failures = 0;
       render();
     } catch (e) {
+      console.error('Trend Rider refresh failed:', e);
       failures++;
       if (failures > 1) {
         $('#statusChip').className = 'status err';

@@ -52,6 +52,20 @@ DEFAULT_CONFIG = {
     'live': {'enabled': False, 'budget_usd': 100.0, 'max_trade_usd': 100.0},
     'port': 8765,
 }
+STOCK_INDEX_FUNDS = {'SPY': 'S&P 500 index fund', 'QQQ': 'Nasdaq 100 index fund', 'IWM': 'Russell 2000 small companies', 'DIA': 'Dow Jones 30 index fund', 'VT': 'Whole world stock market'}
+STOCK_DEFAULTS = {
+    'coins': ['SPY', 'QQQ'],      # 'coins' = the assets this account trades
+    'custom': [],                 # tickers you added yourself
+    'strategy': 'growth',
+    'mix': {'a': 'auto', 'b': 'hold', 'a_pct': 50},
+    'starting_cash': 10000.0,
+    'fee_pct': 0.0,               # most US brokers charge no commission
+    'slippage_pct': 0.05,
+    'min_invested_pct': 0,
+    'rebalance_band_pct': 5,
+    'live': {'enabled': False},
+}
+CFG = None
 
 LOCK = threading.RLock()
 
@@ -89,6 +103,13 @@ def load_config():
     cfg['coins'] = [c for c in cfg.get('coins', []) if c in COINS] or ['BTC']
     if cfg.get('strategy') not in S.STRATEGIES:
         cfg['strategy'] = 'growth'
+    st = json.loads(json.dumps(STOCK_DEFAULTS))
+    st.update(cfg.get('stocks') or {})
+    st['live'] = {'enabled': False}
+    if st.get('strategy') not in S.STRATEGIES:
+        st['strategy'] = 'growth'
+    st['coins'] = [c for c in st.get('coins', []) if isinstance(c, str)][:8] or ['SPY']
+    cfg['stocks'] = st
     return cfg
 
 
@@ -200,6 +221,12 @@ class Market:
         p = self.prices.get(coin)
         return p['price'] if p else None
 
+    def completed(self, rows):
+        return completed_daily(rows)
+
+    def name(self, coin):
+        return COINS[coin]['name'] if coin in COINS else coin
+
     # ---------- Crypto Fear & Greed index (alternative.me), daily since 2018
     def load_fng(self):
         path = os.path.join(CACHE, 'fear_greed.json')
@@ -271,11 +298,141 @@ class Market:
         return self.news
 
 
+class StockMarket:
+    """US stocks and funds from Yahoo Finance (daily, adjusted for dividends and splits)."""
+    YF = 'https://query1.finance.yahoo.com/v8/finance/chart/'
+    FEEDS = [('CNBC', 'https://www.cnbc.com/id/100003114/device/rss/rss.html'),
+             ('MarketWatch', 'https://feeds.content.dowjones.io/public/rss/mw_topstories'),
+             ('Yahoo Finance', 'https://finance.yahoo.com/news/rssindex')]
+
+    def __init__(self):
+        self.prices, self.stats, self.daily, self.daily_ts, self.errors, self.names = {}, {}, {}, {}, {}, {}
+        self.hourly, self.hourly_ts = {}, {}
+
+    def _chart(self, sym, days=None, interval='1d', range_=None):
+        q = {'interval': interval, 'events': 'div,split', 'includePrePost': 'false'}
+        if range_:
+            q['range'] = range_
+        else:
+            q['period1'] = str(max(0, int(time.time() - (days or 900) * DAY)))
+            q['period2'] = str(int(time.time()) + DAY)
+        j = get_json(self.YF + urllib.parse.quote(sym) + '?' + urllib.parse.urlencode(q))
+        res = (j.get('chart') or {}).get('result')
+        if not res:
+            raise NetError(f'{sym}: no data from Yahoo Finance (check the ticker).')
+        r = res[0]
+        meta = r.get('meta', {})
+        self.names[sym] = meta.get('shortName') or meta.get('longName') or sym
+        qd = r['indicators']['quote'][0]
+        adj = ((r['indicators'].get('adjclose') or [{}])[0].get('adjclose')) or qd['close']
+        rows = []
+        for i, t in enumerate(r.get('timestamp') or []):
+            o, h, lo, c, a = qd['open'][i], qd['high'][i], qd['low'][i], qd['close'][i], adj[i]
+            if None in (o, h, lo, c, a) or c <= 0:
+                continue
+            f = a / c
+            rows.append([int(t), o * f, h * f, lo * f, a, float(qd['volume'][i] or 0)])
+        return meta, rows
+
+    def load_daily(self, sym, history_days=900, force=False):
+        """Fetched fresh (adjusted prices change after every dividend), cached for 10 minutes."""
+        have = self.daily.get(sym)
+        need = history_days + 10
+        if force or not have or time.time() - self.daily_ts.get(sym, 0) > 600 or getattr(self, '_days_' + sym, 0) < need:
+            meta, rows = self._chart(sym, days=need)
+            self.daily[sym] = rows
+            self.daily_ts[sym] = time.time()
+            setattr(self, '_days_' + sym, need)
+            self._update_from(sym, meta, rows)
+        return self.daily[sym]
+
+    def load_hourly(self, sym):
+        if time.time() - self.hourly_ts.get(sym, 0) > 300 or sym not in self.hourly:
+            meta, rows = self._chart(sym, interval='60m', range_='1mo')
+            self.hourly[sym] = rows
+            self.hourly_ts[sym] = time.time()
+        return self.hourly[sym]
+
+    def _update_from(self, sym, meta, rows):
+        p = meta.get('regularMarketPrice')
+        if p:
+            self.prices[sym] = {'price': float(p), 'ts': time.time(), 'src': 'Yahoo Finance'}
+        done = self.completed(rows)
+        prev = done[-1][4] if done and (not rows or done[-1][0] != rows[-1][0]) else (done[-2][4] if len(done) > 1 else None)
+        if rows:
+            last = rows[-1]
+            self.stats[sym] = {'open': prev or last[1], 'high': float(meta.get('regularMarketDayHigh') or last[2]),
+                               'low': float(meta.get('regularMarketDayLow') or last[3]), 'last': float(p or last[4]), 'ts': time.time()}
+
+    def refresh_price(self, sym):
+        try:
+            meta, rows = self._chart(sym, range_='5d')
+            self._update_from(sym, meta, rows)
+            self.errors.pop('price', None)
+        except Exception as e:
+            self.errors['price'] = f'Stock prices unavailable ({e})'
+
+    def refresh_stats(self, sym):
+        self.refresh_price(sym)
+
+    def price(self, sym):
+        p = self.prices.get(sym)
+        return p['price'] if p else None
+
+    @staticmethod
+    def completed(rows, now=None):
+        """A daily bar counts once the US market has closed (bar time = 9:30 New York; close 16:00, +10 min)."""
+        now = now or time.time()
+        return [r for r in rows if r[0] + 6.5 * 3600 + 600 <= now]
+
+    def name(self, sym):
+        return self.names.get(sym) or STOCK_INDEX_FUNDS.get(sym) or sym
+
+    def load_fng(self):
+        return {}
+
+    def fng_for(self, times):
+        return None
+
+    def fng_latest(self):
+        return None
+
+    load_news = Market.load_news
+
+
+def ny_now():
+    try:
+        from zoneinfo import ZoneInfo
+        import datetime as _dt
+        return _dt.datetime.now(ZoneInfo('America/New_York'))
+    except Exception:
+        import datetime as _dt
+        return _dt.datetime.utcnow() - _dt.timedelta(hours=5)
+
+
+def next_stock_close():
+    """Unix time of the next weekday 16:10 New York time (holidays not counted)."""
+    import datetime as _dt
+    n = ny_now()
+    d = n.replace(hour=16, minute=10, second=0, microsecond=0)
+    if n >= d:
+        d += _dt.timedelta(days=1)
+    while d.weekday() >= 5:
+        d += _dt.timedelta(days=1)
+    return d.timestamp()
+
+
+def us_market_open():
+    n = ny_now()
+    return n.weekday() < 5 and (n.hour, n.minute) >= (9, 30) and n.hour < 16
+
+
 def fng_label(v):
     return ('Extreme fear' if v <= 20 else 'Fear' if v <= 40 else 'Neutral' if v < 60 else 'Greed' if v < 80 else 'Extreme greed')
 
 
 MARKET = Market()
+STOCKS = StockMarket()
 
 
 def completed_daily(rows, now=None):
@@ -298,9 +455,12 @@ def notify(title, text):
 
 # ================================================================ bot
 class Bot:
-    def __init__(self):
-        self.path = os.path.join(DATA, 'state.json')
-        self.cfg = load_config()
+    def __init__(self, market='crypto'):
+        self.market = market
+        self.M = MARKET if market == 'crypto' else STOCKS
+        self.ann = 365 if market == 'crypto' else 252
+        self.path = os.path.join(DATA, 'state.json' if market == 'crypto' else 'state_stocks.json')
+        self.cfg = CFG if market == 'crypto' else CFG['stocks']
         self.state = read_json(self.path, None)
         self.paused = False
         self.last_attempt = 0
@@ -308,7 +468,7 @@ class Bot:
         self.signal = {}   # coin -> latest decision info
         self.next_decision = None
         self.kraken = None
-        sec = read_json(os.path.join(DATA, 'secrets.json'), {})
+        sec = {} if market != 'crypto' else read_json(os.path.join(DATA, 'secrets.json'), {})
         if os.environ.get('KRAKEN_API_KEY') and os.environ.get('KRAKEN_API_SECRET'):  # cloud: GitHub Secrets
             sec = {'key': os.environ['KRAKEN_API_KEY'], 'secret': os.environ['KRAKEN_API_SECRET']}
         if sec.get('key') and sec.get('secret'):
@@ -317,6 +477,16 @@ class Bot:
             self.state = self.fresh_state()
             self.save()
         self.paused = self.state.get('paused', False)
+
+    def universe(self):
+        """Assets shown in the market list."""
+        if self.market == 'crypto':
+            return list(COINS)
+        out = list(STOCK_INDEX_FUNDS)
+        for c in list(self.cfg.get('custom', [])) + list(self.cfg['coins']):
+            if c not in out:
+                out.append(c)
+        return out
 
     # ---------- state
     def fresh_state(self):
@@ -345,6 +515,8 @@ class Bot:
         return float(self.cfg['slippage_pct']) / 100
 
     def live_on(self):
+        if self.market != 'crypto':
+            return False  # stocks are paper-only for now
         if os.environ.get('TREND_RIDER_CLOUD') and (self.cfg['live'].get('confirm') or '').strip().upper() != 'REAL MONEY':
             return False  # in the cloud, config.json must also contain "confirm": "REAL MONEY"
         return bool(self.cfg['live'].get('enabled')) and self.kraken is not None
@@ -354,7 +526,7 @@ class Bot:
         st = self.state
         v = st['cash']
         for c, q in st['holdings'].items():
-            p = MARKET.price(c)
+            p = self.M.price(c)
             if p is None:
                 return None
             v += q * p
@@ -366,7 +538,7 @@ class Bot:
             return None
         v = st.get('hold_cash', 0.0)
         for c, q in st['hold_qty'].items():
-            p = MARKET.price(c)
+            p = self.M.price(c)
             if p is None:
                 return None
             v += q * p
@@ -378,34 +550,34 @@ class Bot:
         coins = self.cfg['coins']
         if st['hold_qty'] and set(st['hold_qty']) == set(coins):
             return
-        if any(MARKET.price(c) is None for c in coins):
+        if any(self.M.price(c) is None for c in coins):
             return
         base = st['start_cash'] if not st['trades'] else (self.equity() or st['start_cash'])
         w = 1 / len(coins)
-        st['hold_qty'] = {c: base * w * (1 - self.fee - self.slip) / MARKET.price(c) for c in coins}
-        st['hold_start_prices'] = {c: MARKET.price(c) for c in coins}
+        st['hold_qty'] = {c: base * w * (1 - self.fee - self.slip) / self.M.price(c) for c in coins}
+        st['hold_start_prices'] = {c: self.M.price(c) for c in coins}
         st['hold_cash'] = 0.0
         st['hold_started'] = time.time()
 
     # ---------- signals
     def compute_signal(self, coin):
-        rows = completed_daily(MARKET.load_daily(coin))
+        rows = self.M.completed(self.M.load_daily(coin))
         if len(rows) < S.MIN_BARS:
-            return {'coin': coin, 'ok': False, 'why': f'Only {len(rows)} days of history (needs {S.MIN_BARS}).'}
+            return {'coin': coin, 'ok': False, 'why': f'{coin}: only {len(rows)} days of history (needs {S.MIN_BARS}).'}
         t = [r[0] for r in rows]
         h = [r[2] for r in rows]; lo = [r[3] for r in rows]; c = [r[4] for r in rows]
-        fng = MARKET.fng_for(t)
+        fng = self.M.fng_for(t)
         strat, mix = self.cfg['strategy'], self.cfg.get('mix')
-        expo, votes = S.exposure_series(strat, h, lo, c, fng, mix)
+        expo, votes = S.exposure_series(strat, h, lo, c, fng, mix, self.ann)
         floor = float(self.cfg['min_invested_pct']) / 100
         target = S.apply_floor(expo[-1], floor)
         regime = S.regime_series(c)[-1]
         # preview: what the signal would be if today closed at the live price
         preview = None
-        p = MARKET.price(coin)
+        p = self.M.price(coin)
         if p:
             ex2, _ = S.exposure_series(strat, h + [max(h[-1], p)], lo + [min(lo[-1], p)], c + [p],
-                                       (fng + [fng[-1]]) if fng else None, mix)
+                                       (fng + [fng[-1]]) if fng else None, mix, self.ann)
             preview = S.apply_floor(ex2[-1], floor)
         # history of exposure for the chart (last 400 days)
         hist = [[t[i], S.apply_floor(expo[i], floor)] for i in range(max(0, len(t) - 400), len(t))]
@@ -420,9 +592,9 @@ class Bot:
         sigs = {}
         try:
             for coin in coins:
-                MARKET.refresh_price(coin)
+                self.M.refresh_price(coin)
                 if force:
-                    MARKET.load_daily(coin, force=True)
+                    self.M.load_daily(coin, force=True)
                 sigs[coin] = self.compute_signal(coin)
         except Exception as e:
             self.log(f'Could not get price history, will retry in 5 minutes: {e}', 'error')
@@ -434,7 +606,7 @@ class Bot:
                     if not s['ok']:
                         self.log(f"{s['coin']}: {s['why']}", 'warn')
                 return
-            if any(MARKET.price(c) is None for c in coins):
+            if any(self.M.price(c) is None for c in coins):
                 self.log('Skipped the decision: no live price yet.', 'warn')
                 return
             self.ensure_benchmark()
@@ -474,7 +646,7 @@ class Bot:
             return
         orders = []
         for c, target_val, band in self._targets(sigs, eq):
-            p = MARKET.price(c)
+            p = self.M.price(c)
             cur = st['holdings'].get(c, 0.0) * p
             diff = target_val - cur
             if abs(diff) < max(band, 1.0):
@@ -523,7 +695,7 @@ class Bot:
         lv = self.state['live']
         v = lv['cash']
         for c, q in lv['holdings'].items():
-            p = MARKET.price(c)
+            p = self.M.price(c)
             if p is None:
                 return None
             v += q * p
@@ -539,8 +711,8 @@ class Bot:
         if eq is None:
             return
         for c, target_val, band in sorted(self._targets(sigs, eq),
-                                          key=lambda x: x[1] - lv['holdings'].get(x[0], 0) * MARKET.price(x[0])):
-            p = MARKET.price(c)
+                                          key=lambda x: x[1] - lv['holdings'].get(x[0], 0) * self.M.price(x[0])):
+            p = self.M.price(c)
             cur = lv['holdings'].get(c, 0.0) * p
             diff = target_val - cur
             if abs(diff) < max(band, 10.0):
@@ -595,6 +767,12 @@ class Bot:
     def due(self):
         """A new daily candle has closed since the last decision."""
         last = self.state.get('last_decision_day')
+        if self.market != 'crypto':
+            try:
+                done = self.M.completed(self.M.load_daily(self.cfg['coins'][0]))
+            except Exception:
+                return False
+            return bool(done) and (last is None or done[-1][0] > last)
         today_open = (int(time.time()) // DAY) * DAY
         latest_closed = today_open - DAY
         return last is None or last < latest_closed
@@ -610,21 +788,45 @@ class Bot:
         return m > self._code_mtime + 1
 
     def run(self):
-        self.log(f'Trend Rider {VERSION} started in {"LIVE + paper" if self.live_on() else "paper"} mode. '
+        if self.market != 'crypto':
+            self.log(f'Stocks account started (paper). Strategy: {strategy_label(self.cfg)}. Stocks: {", ".join(self.cfg["coins"])}.')
+        else:
+          self.log(f'Trend Rider {VERSION} started in {"LIVE + paper" if self.live_on() else "paper"} mode. '
                  f'Strategy: {strategy_label(self.cfg)}. Coins: {", ".join(self.cfg["coins"])}.')
         last_stats = 0
         while True:
             try:
+                if self.market != 'crypto':
+                    every = 60 if us_market_open() else 1800
+                    if time.time() - last_stats > every:
+                        last_stats = time.time()
+                        for c in self.universe():
+                            self.M.refresh_price(c)
+                            time.sleep(0.4)
+                    if self.due() and time.time() - self.last_attempt > 300:
+                        self.decide()
+                    elif time.time() - self.last_signal > 600:
+                        self.last_signal = time.time()
+                        sig = {c: self.compute_signal(c) for c in self.cfg['coins']}
+                        with LOCK:
+                            self.signal = sig
+                    self.ensure_benchmark()
+                    self.tick_equity()
+                    if time.time() - getattr(self, 'race_ts', 0) > 1800:
+                        self.race()
+                    self.M.errors.pop('bot', None)
+                    time.sleep(30)
+                    continue
                 for c in self.cfg['coins']:
-                    MARKET.refresh_price(c)
+                    self.M.refresh_price(c)
                 if time.time() - last_stats > 60:
                     last_stats = time.time()
                     for c in COINS:
                         try:
-                            MARKET.refresh_stats(c)
-                            MARKET.errors.pop('stats', None)
+                            self.M.refresh_stats(c)
+                            self.M.errors.pop('stats', None)
                         except Exception as e:
-                            MARKET.errors['stats'] = str(e)
+                            self.M.errors['stats'] = str(e)
                         time.sleep(0.15)
                 if self.due() and (time.time() % DAY) > 90 and time.time() - self.last_attempt > 300:
                     self.decide()
@@ -637,14 +839,14 @@ class Bot:
                 self.tick_equity()
                 if time.time() - getattr(self, 'race_ts', 0) > 600:
                     self.race()
-                if self.code_changed():
+                if self.market == 'crypto' and self.code_changed():
                     self.log('Trend Rider was updated. Restarting with the new version…')
                     self.save()
                     time.sleep(1)
                     os.execv(sys.executable, [sys.executable, os.path.join(HERE, 'server.py')])
-                MARKET.errors.pop('bot', None)
+                self.M.errors.pop('bot', None)
             except Exception as e:
-                MARKET.errors['bot'] = str(e)
+                self.M.errors['bot'] = str(e)
                 self.log(f'Problem in the bot loop (will retry): {e}', 'error')
                 traceback.print_exc()
             time.sleep(15)
@@ -662,12 +864,12 @@ class Bot:
         try:
             per_coin = {}
             for coin in coins:
-                rows = completed_daily(MARKET.load_daily(coin, history_days=3 * 365 + S.MIN_BARS + 60))
-                p = MARKET.price(coin)
+                rows = self.M.completed(self.M.load_daily(coin, history_days=3 * 365 + (S.MIN_BARS + 60) * (1 if self.market == 'crypto' else 2)))
+                p = self.M.price(coin)
                 t = [r[0] for r in rows]; h = [r[2] for r in rows]; lo = [r[3] for r in rows]; c = [r[4] for r in rows]
                 if p:  # count today's move so far at the live price
                     t, h, lo, c = t + [int(time.time())], h + [max(h[-1], p)], lo + [min(lo[-1], p)], c + [p]
-                per_coin[coin] = (t, h, lo, c, MARKET.fng_for(t))
+                per_coin[coin] = (t, h, lo, c, self.M.fng_for(t))
             for wname, wstart in windows.items():
                 for st in names:
                     rets = []
@@ -675,7 +877,7 @@ class Bot:
                         si = next((i for i, x in enumerate(t) if x >= wstart - DAY), len(t) - 1)
                         si = min(max(si, S.MIN_BARS), len(t) - 1)
                         r = S.backtest(t, h, lo, c, st, cost=cost, floor=float(self.cfg['min_invested_pct']) / 100 if st != 'hold' else 0,
-                                       start_index=si, fng=fng, mix=self.cfg.get('mix'))
+                                       start_index=si, fng=fng, mix=self.cfg.get('mix'), ann=self.ann)
                         rets.append(r['equity'][-1] - 1 if st != 'hold' else r['hold'][-1] - 1)
                     out[wname][st] = sum(rets) / len(rets) if rets else None
         except Exception as e:
@@ -690,15 +892,17 @@ class Bot:
             eq, he = self.equity(), self.hold_equity()
             positions = []
             for c in self.cfg['coins']:
-                p = MARKET.price(c)
+                p = self.M.price(c)
                 q = st['holdings'].get(c, 0.0)
-                positions.append({'coin': c, 'name': COINS[c]['name'], 'qty': q, 'price': p,
+                positions.append({'coin': c, 'name': self.M.name(c), 'qty': q, 'price': p,
                                   'value': q * p if p else None, 'target': (self.signal.get(c) or {}).get('target')})
             now = time.time()
-            next_close = (int(now) // DAY + 1) * DAY + 90
+            next_close = (int(now) // DAY + 1) * DAY + 90 if self.market == 'crypto' else next_stock_close()
             return {
                 'version': VERSION, 'now': now, 'config': self.public_config(),
-                'coins': {k: v['name'] for k, v in COINS.items()},
+                'market': self.market,
+                'coins': {k: self.M.name(k) for k in self.universe()},
+                'index_funds': STOCK_INDEX_FUNDS if self.market != 'crypto' else None,
                 'strategies': S.STRATEGIES,
                 'paused': self.paused, 'live_on': self.live_on(), 'has_keys': self.kraken is not None,
                 'equity': eq, 'hold_equity': he, 'cash': st['cash'], 'start_cash': st['start_cash'],
@@ -707,12 +911,13 @@ class Bot:
                 'last_decision_ts': st.get('last_decision_ts'),
                 'trades': st['trades'][-200:], 'log': st['log'][-150:],
                 'equity_curve': st['equity'],
-                'prices': MARKET.prices, 'stats': MARKET.stats, 'errors': MARKET.errors,
+                'prices': self.M.prices, 'stats': self.M.stats, 'errors': self.M.errors,
                 'live': {'cash': st['live']['cash'], 'holdings': st['live']['holdings'],
                          'trades': st['live']['trades'][-100:], 'equity': self.live_equity() if self.live_on() else None,
                          'started': st['live'].get('started')},
                 'background': background_status(),
-                'fng': MARKET.fng_latest() if getattr(MARKET, 'fng', None) else None,
+                'fng': self.M.fng_latest() if (self.market == 'crypto' and getattr(self.M, 'fng', None)) else None,
+                'us_market_open': us_market_open() if self.market != 'crypto' else None,
                 'race': getattr(self, 'race_cache', None),
                 'mix_choices': {k: S.STRATEGIES[k] for k in S.BASE_STRATEGIES},
             }
@@ -723,6 +928,7 @@ class Bot:
 
 
 BOT = None
+BOTS = {}
 
 
 def strategy_label(cfg):
@@ -733,9 +939,11 @@ def strategy_label(cfg):
 
 
 # ================================================================ backtest API
-def run_backtest(coin, strategy, years, fee_pct, floor_pct, mix=None):
-    days = int(years * 365) + S.MIN_BARS + 60
-    rows = completed_daily(MARKET.load_daily(coin, history_days=days))
+def run_backtest(coin, strategy, years, fee_pct, floor_pct, mix=None, bot=None):
+    bot = bot or BOT
+    M = bot.M
+    days = int(years * 365) + (S.MIN_BARS + 60) * (1 if bot.market == 'crypto' else 2)
+    rows = M.completed(M.load_daily(coin, history_days=days))
     if len(rows) < S.MIN_BARS + 30:
         raise ValueError(f'Not enough {coin} history yet ({len(rows)} days).')
     t = [r[0] for r in rows]; h = [r[2] for r in rows]; lo = [r[3] for r in rows]; c = [r[4] for r in rows]
@@ -744,7 +952,7 @@ def run_backtest(coin, strategy, years, fee_pct, floor_pct, mix=None):
     si = max(si, S.MIN_BARS)
     cost = (fee_pct + 0.05) / 100
     out = {'coin': coin, 'strategy': strategy, 'from': t[si - 1], 'to': t[-1], 'cost_pct': cost * 100}
-    res = S.backtest(t, h, lo, c, strategy, cost=cost, floor=floor_pct / 100, start_index=si, fng=MARKET.fng_for(t), mix=mix)
+    res = S.backtest(t, h, lo, c, strategy, cost=cost, floor=floor_pct / 100, start_index=si, fng=M.fng_for(t), mix=mix, ann=bot.ann)
     step = max(1, len(res['times']) // 700)
     out['curve'] = [[res['times'][i], res['equity'][i], res['hold'][i], res['exposure'][i]]
                     for i in range(0, len(res['times']), step)] + [[res['times'][-1], res['equity'][-1], res['hold'][-1], res['exposure'][-1]]]
@@ -834,31 +1042,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {'error': 'Open the app at http://127.0.0.1:%d' % BOT.cfg['port']})
         u = urllib.parse.urlparse(self.path)
         q = dict(urllib.parse.parse_qsl(u.query))
+        bot = BOTS.get(q.get('market', 'crypto'), BOT)
         try:
             if u.path == '/api/state':
-                return self._send(200, BOT.snapshot())
+                return self._send(200, bot.snapshot())
             if u.path == '/api/candles':
                 coin = q.get('coin', 'BTC')
-                if coin not in COINS:
-                    return self._send(400, {'error': 'Unknown coin'})
+                if coin not in bot.universe():
+                    return self._send(400, {'error': 'Unknown asset'})
                 if q.get('tf') == '1h':
-                    rows = MARKET.load_hourly(coin)
+                    rows = bot.M.load_hourly(coin)
                 else:
-                    rows = MARKET.load_daily(coin)[-500:]
+                    rows = bot.M.load_daily(coin)[-500:]
                 return self._send(200, {'coin': coin, 'rows': rows})
             if u.path == '/api/backtest':
                 coin = q.get('coin', 'BTC')
-                if coin not in COINS:
-                    return self._send(400, {'error': 'Unknown coin'})
-                strat = q.get('strategy', 'growth')
-                years = max(1.0, min(12.0, float(q.get('years', 5))))
-                fee = max(0.0, min(2.0, float(q.get('fee', BOT.cfg['fee_pct']))))
+                if coin not in bot.universe():
+                    return self._send(400, {'error': 'Unknown asset'})
+                years = max(1.0, min(30.0, float(q.get('years', 5))))
+                fee = max(0.0, min(2.0, float(q.get('fee', bot.cfg['fee_pct']))))
                 floor = max(0.0, min(100.0, float(q.get('floor', 0))))
-                names = ['growth', 'steady', 'auto'] + (['mix'] if BOT.cfg['strategy'] == 'mix' else [])
-                res = {'runs': [dict(run_backtest(coin, s, years, fee, floor, BOT.cfg.get('mix')), label=strategy_label(dict(BOT.cfg, strategy=s))) for s in names]}
+                names = ['growth', 'steady', 'auto'] + (['mix'] if bot.cfg['strategy'] == 'mix' else [])
+                res = {'runs': [dict(run_backtest(coin, s, years, fee, floor, bot.cfg.get('mix'), bot), label=strategy_label(dict(bot.cfg, strategy=s))) for s in names]}
                 return self._send(200, res)
             if u.path == '/api/news':
-                return self._send(200, MARKET.load_news())
+                return self._send(200, bot.M.load_news())
             if u.path == '/api/research':
                 return self._send(200, read_json(os.path.join(HERE, 'research.json'), {}))
             path = u.path if u.path != '/' else '/index.html'
@@ -895,7 +1103,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {'error': str(e)})
 
     def route_post(self, p, b):
-        bot = BOT
+        bot = BOTS.get(b.get('market', 'crypto'), BOT)
+        if bot.market != 'crypto' and p.startswith('/api/live/'):
+            raise ValueError('Live trading is only available for crypto (Kraken) right now.')
         if p == '/api/decide':
             threading.Thread(target=bot.decide, args=('Manual check',), daemon=True).start()
             return {'ok': True}
@@ -908,10 +1118,25 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/settings':
             cfg = bot.cfg
             reset_needed = False
+            if 'custom' in b and bot.market != 'crypto':
+                custom = []
+                for t in b['custom'][:8]:
+                    t = re.sub(r'[^A-Z0-9.\-^=]', '', str(t).upper())[:10]
+                    if t and t not in custom and t not in STOCK_INDEX_FUNDS:
+                        try:  # check the ticker exists (without touching the bot's error banner)
+                            meta, rows = bot.M._chart(t, range_='5d')
+                            bot.M._update_from(t, meta, rows)
+                        except Exception:
+                            rows = []
+                        if not rows or bot.M.price(t) is None:
+                            raise ValueError(f'Could not find {t} on Yahoo Finance. Check the ticker.')
+                        custom.append(t)
+                cfg['custom'] = custom
             if 'coins' in b:
-                coins = [c for c in b['coins'] if c in COINS][:6]
+                allowed = set(COINS) if bot.market == 'crypto' else set(bot.universe())
+                coins = [c for c in b['coins'] if c in allowed][:8]
                 if not coins:
-                    raise ValueError('Pick at least one coin.')
+                    raise ValueError('Pick at least one coin.' if bot.market == 'crypto' else 'Pick at least one stock or fund.')
                 if coins != cfg['coins']:
                     cfg['coins'] = coins
                     reset_needed = True
@@ -937,9 +1162,9 @@ class Handler(BaseHTTPRequestHandler):
                     if not lo <= v <= hi:
                         raise ValueError(f'{k} must be between {lo} and {hi}.')
                     cfg[k] = v
-            save_config(cfg)
+            save_config(CFG)
             bot.race_ts = 0
-            bot.log(f"Settings saved: {strategy_label(cfg)}, coins {', '.join(cfg['coins'])}, "
+            bot.log(f"Settings saved: {strategy_label(cfg)}, {'coins' if bot.market == 'crypto' else 'stocks'} {', '.join(cfg['coins'])}, "
                     f"fee {cfg['fee_pct']}%, minimum invested {cfg['min_invested_pct']:.0f}%.")
             if reset_needed:
                 bot.state['hold_qty'] = {}
@@ -949,7 +1174,7 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 if 'starting_cash' in b:
                     bot.cfg['starting_cash'] = max(100.0, float(b['starting_cash']))
-                    save_config(bot.cfg)
+                    save_config(CFG)
                 live = bot.state.get('live')
                 bot.state = bot.fresh_state()
                 bot.state['live'] = live or bot.state['live']
@@ -978,7 +1203,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             bot.kraken = None
             bot.cfg['live']['enabled'] = False
-            save_config(bot.cfg)
+            save_config(CFG)
             bot.log('Kraken keys removed. Live trading is off.')
             return {'ok': True}
         if p == '/api/live/enable':
@@ -995,7 +1220,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError(f'Your Kraken account has ${usd:,.2f} USD, less than the ${budget:,.2f} budget.')
             with LOCK:
                 bot.cfg['live'].update({'enabled': True, 'budget_usd': budget, 'max_trade_usd': cap})
-                save_config(bot.cfg)
+                save_config(CFG)
                 bot.state['live'] = {'cash': budget, 'holdings': {}, 'trades': bot.state['live'].get('trades', []),
                                      'started': time.time()}
                 bot.save()
@@ -1004,7 +1229,7 @@ class Handler(BaseHTTPRequestHandler):
             return {'ok': True}
         if p == '/api/live/disable':
             bot.cfg['live']['enabled'] = False
-            save_config(bot.cfg)
+            save_config(CFG)
             bot.log('Live trading OFF. Coins already bought stay in your Kraken account.', 'warn')
             return {'ok': True}
         if p == '/api/quit':
@@ -1032,7 +1257,9 @@ def main():
     ap.add_argument('--open', action='store_true', help='open the dashboard in your browser')
     args = ap.parse_args()
     ensure_dirs()
-    port = load_config()['port']
+    global CFG, BOTS
+    CFG = load_config()
+    port = CFG['port']
     url = f'http://127.0.0.1:{port}'
     try:
         httpd = ThreadingHTTPServer(('127.0.0.1', port), Handler)
@@ -1041,8 +1268,10 @@ def main():
         if args.open:
             webbrowser.open(url)
         return
-    BOT = Bot()
-    threading.Thread(target=BOT.run, daemon=True).start()
+    BOT = Bot('crypto')
+    BOTS = {'crypto': BOT, 'stocks': Bot('stocks')}
+    for b_ in BOTS.values():
+        threading.Thread(target=b_.run, daemon=True).start()
     print(f'\n  Trend Rider is running: {url}\n  Keep this window open (or turn on background mode in Settings).\n', flush=True)
     if args.open:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()

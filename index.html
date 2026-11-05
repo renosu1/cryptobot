@@ -16,6 +16,7 @@
       <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" class="brand-bg"/><path d="M5 22 L12 15 L17 19 L27 8" class="brand-line"/></svg>
       <span>Trend Rider</span>
     </div>
+    <div class="seg" id="marketTabs" role="tablist" aria-label="Market"><button data-m="crypto" class="on">Crypto</button><button data-m="stocks">Stocks</button></div>
     <span id="modePill" class="pill pill-paper">Paper money</span>
     <span id="statusChip" class="status"><span class="dot"></span><span id="statusText">Starting…</span></span>
     <div class="top-actions">
@@ -105,7 +106,7 @@
     <div class="card">
       <h2>Holdings</h2>
       <div class="table-wrap"><table class="tbl" id="posTable">
-        <thead><tr><th>Coin</th><th class="r">Amount</th><th class="r">Price</th><th class="r">Value</th><th class="r">Target</th></tr></thead>
+        <thead><tr><th id="posHead">Coin</th><th class="r">Amount</th><th class="r">Price</th><th class="r">Value</th><th class="r">Target</th></tr></thead>
         <tbody></tbody>
       </table></div>
       <div id="livePanel" hidden>
@@ -144,7 +145,7 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><h2>Market</h2><span class="muted small">Last 24 hours on Coinbase</span></div>
+    <div class="card-head"><h2>Market</h2><span class="muted small" id="marketNote">Last 24 hours on Coinbase</span></div>
     <div class="market" id="market"></div>
   </div>
 </section>
@@ -153,10 +154,10 @@
 <section id="view-backtest" class="view" hidden>
   <div class="card">
     <h2>Test the strategies on past prices</h2>
-    <p class="muted">Runs every strategy on Coinbase daily prices with your fee, and compares them with simply buying once and holding. Past results do not predict future results.</p>
+    <p class="muted" id="btIntro">Runs every strategy on Coinbase daily prices with your fee, and compares them with simply buying once and holding. Past results do not predict future results.</p>
     <form id="btForm" class="form-row">
-      <label>Coin <select id="btCoin"></select></label>
-      <label>Period <select id="btYears"><option value="1">1 year</option><option value="2">2 years</option><option value="3">3 years</option><option value="5" selected>5 years</option><option value="8">8 years</option><option value="12">All available</option></select></label>
+      <label><span id="btCoinLabel">Coin</span> <select id="btCoin"></select></label>
+      <label>Period <select id="btYears"><option value="1">1 year</option><option value="2">2 years</option><option value="3">3 years</option><option value="5" selected>5 years</option><option value="8">8 years</option><option value="12">12 years</option><option value="30">All available</option></select></label>
       <label>Fee per trade (%) <input id="btFee" type="number" min="0" max="2" step="0.05" value="0.4"></label>
       <label>Always invested at least (%) <input id="btFloor" type="number" min="0" max="100" step="10" value="0"></label>
       <button class="btn btn-primary" id="btRun" type="submit">Run backtest</button>
@@ -199,9 +200,13 @@
           </div></div></label>
         <label class="opt"><input type="radio" name="strategy" value="hold"><div><b>Just hold</b><span>Buys once and never sells. Useful to compare.</span></div></label>
       </div>
-      <h3>Coins the bot trades</h3>
-      <p class="muted small">Money is split evenly. Bitcoin + Ethereum together did best over 2017–2026 (see How it was tested). Smaller coins have short histories; check them in Backtest first.</p>
+      <h3 id="assetsHeading">Coins the bot trades</h3>
+      <p class="muted small" id="assetsNote">Money is split evenly. Bitcoin + Ethereum together did best over 2017–2026 (see How it was tested). Smaller coins have short histories; check them in Backtest first.</p>
       <div class="checks" id="coinChecks"></div>
+      <div id="customBox" class="form-row" hidden>
+        <label>Add a stock ticker <input id="customTicker" type="text" placeholder="e.g. AAPL" autocomplete="off" spellcheck="false" maxlength="10"></label>
+        <button class="btn btn-ghost" id="customAdd" type="button">Add</button>
+      </div>
       <h3>Trading costs and rules</h3>
       <div class="form-grid">
         <label>Fee per trade (%) <input id="sFee" type="number" min="0" max="2" step="0.05"></label>
@@ -239,11 +244,17 @@
         <button class="btn btn-danger" id="quitYes">Stop</button> <button class="btn btn-ghost" id="quitNo">Cancel</button>
       </div>
 
+      <div id="liveSection">
       <h2 class="mt">Live trading with Kraken <span class="pill pill-beta">Beta</span></h2>
       <div class="warn-box">
         <p><b>Real money can be lost.</b> In testing on 2023–2026 prices, this bot made <b>less</b> than just holding (+195% vs +383%), while losing less in crashes. No bot can promise a profit. Run paper trading for at least a month first, and only use money you can afford to lose. You must be 18 or older to use an exchange.</p>
       </div>
       <div id="liveBox"></div>
+      </div>
+      <div id="stockLiveNote" hidden>
+        <h2 class="mt">Real money</h2>
+        <p class="muted">The stocks account is paper-only for now. In testing on 24 stock histories, trend rules cut the worst crashes but made less money than simply holding in every one, so there is no rush to trade it for real. A broker with a trading API (such as Alpaca) could be connected later.</p>
+      </div>
     </div>
   </div>
 </section>
