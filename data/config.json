@@ -18,7 +18,9 @@
     "enabled": false,
     "confirm": "",
     "budget_usd": 100.0,
-    "max_trade_usd": 100.0
+    "max_trade_usd": 100.0,
+    "limit_orders": true,
+    "limit_wait_min": 30
   },
   "stocks": {
     "coins": [

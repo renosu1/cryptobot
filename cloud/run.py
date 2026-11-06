@@ -140,7 +140,7 @@ def main():
     os.makedirs(DATA, exist_ok=True)
     if not os.path.exists(os.path.join(DATA, 'config.json')):
         cfg = json.loads(json.dumps(server.DEFAULT_CONFIG))
-        cfg['live'] = {'enabled': False, 'confirm': '', 'budget_usd': 100.0, 'max_trade_usd': 100.0}
+        cfg['live'] = {'enabled': False, 'confirm': '', 'budget_usd': 100.0, 'max_trade_usd': 100.0, 'limit_orders': True, 'limit_wait_min': 30}
         cfg.pop('port', None)
         write(os.path.join(DATA, 'config.json'), cfg)
     server.CFG = server.load_config()

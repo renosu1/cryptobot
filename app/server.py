@@ -49,7 +49,8 @@ DEFAULT_CONFIG = {
     'slippage_pct': 0.05,     # extra price you lose on a market order, %
     'min_invested_pct': 0,    # never go below this much invested (0 = let the bot decide)
     'rebalance_band_pct': 5,  # ignore drifts smaller than this share of a coin's slot
-    'live': {'enabled': False, 'budget_usd': 100.0, 'max_trade_usd': 100.0},
+    'live': {'enabled': False, 'budget_usd': 100.0, 'max_trade_usd': 100.0,
+             'limit_orders': True, 'limit_wait_min': 30},   # limit first (maker fee), instant order after 30 min
     'port': 8765,
 }
 STOCK_INDEX_FUNDS = {'SPY': 'S&P 500 index fund', 'QQQ': 'Nasdaq 100 index fund', 'IWM': 'Russell 2000 small companies', 'DIA': 'Dow Jones 30 index fund', 'VT': 'Whole world stock market'}
@@ -71,6 +72,7 @@ PARK = 'GLD'   # SPDR Gold Shares: where the stocks account parks money the stra
 CFG = None
 
 LOCK = threading.RLock()
+LIVE_LOCK = threading.Lock()   # one set of real orders at a time
 
 
 # ================================================================ storage
@@ -640,6 +642,7 @@ class Bot:
     def decide(self, reason='Daily decision', force=True):
         """Compute today's target exposure for each coin and trade toward it."""
         self.last_attempt = time.time()
+        go_live = False
         coins = list(self.cfg['coins'])
         sigs = {}
         try:
@@ -678,14 +681,17 @@ class Bot:
                 summary += f'; idle money in gold {pk * 100:.0f}% of the account'
             self.log(f'{reason}: target invested {summary}.')
             self.rebalance_paper(sigs, reason)
-            if self.live_on():
-                try:
-                    self.rebalance_live(sigs, reason)
-                except Exception as e:
-                    self.log(f'LIVE trading error, no further live orders this round: {e}', 'error')
             self.state['last_decision_day'] = day
             self.state['last_decision_ts'] = time.time()
             self.save()
+            go_live = self.live_on()
+        if go_live:   # outside the lock: the dashboard keeps working while limit orders wait for fills
+            try:
+                self.rebalance_live(sigs, reason)
+            except Exception as e:
+                self.log(f'LIVE trading error, no further live orders this round: {e}', 'error')
+            with LOCK:
+                self.save()
 
     def _targets(self, sigs, equity):
         coins = self.cfg['coins']
@@ -767,51 +773,84 @@ class Bot:
         return v
 
     def rebalance_live(self, sigs, reason):
-        """Trades only the bot's own budget. Never sells coins the bot did not buy."""
-        lv = self.state['live']
-        cap = float(self.cfg['live']['max_trade_usd'])
-        bal = self.kraken.balances()
-        usd_bal = sum(bal.get(k, 0.0) for k in ('ZUSD', 'USD'))
-        eq = self.live_equity()
-        if eq is None:
+        """Trades only the bot's own budget. Never sells coins the bot did not buy.
+        Sells first, then buys with the freed cash. Each order is a limit order first (Kraken's lower maker
+        fee); whatever has not filled after `limit_wait_min` minutes goes out as an instant (market) order."""
+        if not LIVE_LOCK.acquire(blocking=False):
+            self.log('LIVE: the previous orders are still working; nothing new sent this round.', 'warn')
             return
-        for c, target_val, band in sorted(self._targets(sigs, eq),
-                                          key=lambda x: x[1] - lv['holdings'].get(x[0], 0) * self.M.price(x[0])):
-            p = self.M.price(c)
-            cur = lv['holdings'].get(c, 0.0) * p
-            diff = target_val - cur
-            if abs(diff) < max(band, 10.0):
-                continue
-            info = self.kraken.pair_info(COINS[c]['kr'])
-            if diff < 0:
+        try:
+            lv = self.state['live']
+            lcfg = self.cfg['live']
+            cap = float(lcfg['max_trade_usd'])
+            wait = float(lcfg.get('limit_wait_min', 30)) * 60 if lcfg.get('limit_orders', True) else 0.0
+            eq = self.live_equity()
+            if eq is None:
+                return
+            plan = self._targets(sigs, eq)
+            bal = self.kraken.balances()
+            sells = []
+            for c, target_val, band in plan:
+                p = self.M.price(c)
+                diff = target_val - lv['holdings'].get(c, 0.0) * p
+                if diff >= 0 or -diff < max(band, 10.0):
+                    continue
+                info = self.kraken.pair_info(COINS[c]['kr'])
                 coin_bal = sum(bal.get(k, 0.0) for k in COINS[c]['kr_bal'])
                 qty = min(lv['holdings'].get(c, 0.0), coin_bal, min(-diff, cap) / p)
                 qty = math.floor(qty * 10 ** info['lot_decimals']) / 10 ** info['lot_decimals']
                 if qty < info['ordermin'] or qty * p < max(info['costmin'], 5):
                     self.log(f'LIVE: sell of {c} too small for Kraken, skipped.', 'warn')
                     continue
-                res = self.kraken.market_order(COINS[c]['kr'], 'sell', qty, info['lot_decimals'])
-                f = res['fill'] or {'vol': qty, 'cost': qty * p, 'fee': qty * p * self.fee, 'price': p}
-                lv['holdings'][c] = max(0.0, lv['holdings'].get(c, 0.0) - f['vol'])
-                if lv['holdings'][c] < 10 ** -info['lot_decimals']:
-                    lv['holdings'].pop(c)
-                lv['cash'] += f['cost'] - f['fee']
-                self._record('sell', c, f['vol'], f['price'], f['cost'], f['fee'], reason, sigs[c]['target'],
-                             'live', {'txid': res['txid'], 'confirmed': bool(res['fill'])})
-            else:
-                spend = min(diff, cap, lv['cash'], usd_bal * 0.995)
+                sells.append({'coin': c, 'pair': COINS[c]['kr'], 'side': 'sell', 'volume': qty, 'info': info,
+                              'price': p, 'est_fee': self.fee})
+            self._live_execute(sells, wait, sigs, reason)
+            usd_bal = sum(self.kraken.balances().get(k, 0.0) for k in ('ZUSD', 'USD'))
+            cash = min(lv['cash'], usd_bal * 0.995)
+            buys = []
+            for c, target_val, band in plan:
+                p = self.M.price(c)
+                diff = target_val - lv['holdings'].get(c, 0.0) * p
+                if diff <= 0 or diff < max(band, 10.0):
+                    continue
+                info = self.kraken.pair_info(COINS[c]['kr'])
+                spend = min(diff, cap, cash)
                 qty = spend * (1 - self.fee) / (p * (1 + self.slip))
                 qty = math.floor(qty * 10 ** info['lot_decimals']) / 10 ** info['lot_decimals']
                 if qty < info['ordermin'] or qty * p < max(info['costmin'], 5):
                     self.log(f'LIVE: buy of {c} too small for Kraken (or budget used up), skipped.', 'warn')
                     continue
-                res = self.kraken.market_order(COINS[c]['kr'], 'buy', qty, info['lot_decimals'])
-                f = res['fill'] or {'vol': qty, 'cost': qty * p, 'fee': qty * p * self.fee, 'price': p}
-                lv['holdings'][c] = lv['holdings'].get(c, 0.0) + f['vol']
-                lv['cash'] -= f['cost'] + f['fee']
-                self._record('buy', c, f['vol'], f['price'], f['cost'], f['fee'], reason, sigs[c]['target'],
-                             'live', {'txid': res['txid'], 'confirmed': bool(res['fill'])})
-            usd_bal = sum(self.kraken.balances().get(k, 0.0) for k in ('ZUSD', 'USD'))
+                cash -= spend
+                buys.append({'coin': c, 'pair': COINS[c]['kr'], 'side': 'buy', 'volume': qty, 'info': info,
+                             'price': p, 'est_fee': self.fee})
+            self._live_execute(buys, wait, sigs, reason)
+        finally:
+            LIVE_LOCK.release()
+
+    def _live_execute(self, orders, wait, sigs, reason):
+        if not orders:
+            return
+        if wait:
+            self.log(f"LIVE: {len(orders)} limit order(s) placed at the best price on Kraken's book; "
+                     f'anything not filled within {wait / 60:.0f} minutes becomes an instant order.')
+        for f in self.kraken.limit_first(orders, wait_s=wait, log=self.log):
+            if f['abort'] or f['vol'] <= 0:
+                continue
+            c = f['coin']
+            with LOCK:
+                lv = self.state['live']
+                if f['side'] == 'sell':
+                    lv['holdings'][c] = max(0.0, lv['holdings'].get(c, 0.0) - f['vol'])
+                    if lv['holdings'][c] < 10 ** -f['info']['lot_decimals']:
+                        lv['holdings'].pop(c)
+                    lv['cash'] += f['cost'] - f['fee']
+                else:
+                    lv['holdings'][c] = lv['holdings'].get(c, 0.0) + f['vol']
+                    lv['cash'] -= f['cost'] + f['fee']
+                self._record(f['side'], c, f['vol'], f['price'], f['cost'], f['fee'], reason, sigs[c]['target'], 'live',
+                             {'txid': f['txids'], 'confirmed': f['confirmed'],
+                              'limit_share': round(f['maker_vol'] / f['vol'], 3) if f['vol'] else 0.0})
+                self.save()
 
     # ---------- loop
     def tick_equity(self):

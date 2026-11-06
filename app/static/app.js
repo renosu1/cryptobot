@@ -279,6 +279,7 @@
     const setHidden = (sel, v) => { const el = $(sel); if (el) el.hidden = v; };
     const setText = (sel, v) => { const el = $(sel); if (el) el.textContent = v; };
     setHidden('#liveSection', STOCKS()); setHidden('#stockLiveNote', !STOCKS()); setHidden('#customBox', !STOCKS()); setHidden('#parkBox', !STOCKS());
+    setHidden('#feeNote', STOCKS());
     setText('#raceNote', STOCKS() ? `Every strategy on your stocks, with your fees${S.park ? '; idle money waits in gold' : ''}` : 'Every strategy on your coins, with your fees');
     setText('#btIntro', STOCKS() ? `Runs every strategy on daily prices from Yahoo Finance (dividends included) with your fee, and compares them with simply buying once and holding.${S.park ? ' Idle money waits in the gold fund (GLD), as in your account; before GLD existed (November 2004) it counts as cash.' : ''} Past results do not predict future results.` : 'Runs every strategy on Coinbase daily prices with your fee, and compares them with simply buying once and holding. Past results do not predict future results.');
     setText('#btCoinLabel', STOCKS() ? 'Stock or fund' : 'Coin');
