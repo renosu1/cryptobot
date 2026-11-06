@@ -1,0 +1,25 @@
+name: Research data (prices for strategy research)
+on:
+  push:
+    branches: [research-data]
+    paths: ['fetch.py', 'symbols.txt', '.github/workflows/research-data.yml']
+permissions:
+  contents: write
+concurrency: research-data
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with: {ref: research-data}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python fetch.py
+      - name: Save data
+        run: |
+          git config user.name "trend-rider-research"
+          git config user.email "research@users.noreply.github.com"
+          git add data
+          git commit -m "Research data $(date -u '+%Y-%m-%d %H:%M UTC')" || echo "nothing new"
+          git push
