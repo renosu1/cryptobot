@@ -417,9 +417,9 @@ def ny_now():
         from zoneinfo import ZoneInfo
         import datetime as _dt
         return _dt.datetime.now(ZoneInfo('America/New_York'))
-    except Exception:
+    except Exception:   # no time zone data: New York winter time (an hour off in summer, but never in the Mac's own zone)
         import datetime as _dt
-        return _dt.datetime.utcnow() - _dt.timedelta(hours=5)
+        return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=-5)))
 
 
 def next_stock_close():
@@ -504,11 +504,22 @@ class Bot:
         return out
 
     def price_list(self):
-        """Everything whose live price the bot needs (the market list plus the gold fund when used)."""
+        """Everything whose live price the bot needs: the market list, the gold fund when used, and anything
+        still held (paper or live), so the account value can always be worked out."""
         out = self.universe()
         if self.market != 'crypto' and PARK not in out and (self.parking() or self.state['holdings'].get(PARK)):
             out.append(PARK)
+        for c in list(self.state['holdings']) + list(self.state.get('live', {}).get('holdings', {})):
+            if c not in out:
+                out.append(c)
         return out
+
+    def leftovers(self, holdings):
+        """Assets still held that are no longer selected in Settings (they get sold). The parked gold
+        fund is handled by the parking rules, not here."""
+        coins = self.cfg['coins']
+        return [c for c, q in holdings.items()
+                if q > 0 and c not in coins and not (self.market != 'crypto' and c == PARK)]
 
     # ---------- parking idle money (stocks account)
     def parking(self):
@@ -656,11 +667,16 @@ class Bot:
                 if force:
                     self.M.load_daily(coin, force=True)
                 sigs[coin] = self.compute_signal(coin)
-            if self.market != 'crypto' and PARK in self.price_list() and PARK not in coins:
-                self.M.refresh_price(PARK)
         except Exception as e:
             self.log(f'Could not get price history, will retry in 5 minutes: {e}', 'error')
             return
+        gone = set(self.leftovers(self.state['holdings'])) | set(self.leftovers(self.state.get('live', {}).get('holdings', {})))
+        for c in self.price_list():   # gold fund and assets no longer selected: a missing price must not block the decision
+            if c not in coins and (c == PARK or c in gone):
+                try:
+                    self.M.refresh_price(c)
+                except Exception as e:
+                    self.log(f'Could not refresh the price of {c}: {e}', 'warn')
         with LOCK:
             self.signal = sigs
             if any(not s['ok'] for s in sigs.values()):
@@ -718,6 +734,9 @@ class Bot:
             share = self.park_share(sigs) or 0.0   # parking switched off: sell any gold that is left
             band = float(self.cfg['rebalance_band_pct']) / 100 / len(self.cfg['coins'])
             targets.append((PARK, eq * share, eq * band if share > 0 else 0.0, share))
+        for c in self.leftovers(st['holdings']):   # removed in Settings: sell it
+            if self.M.price(c):
+                targets.append((c, 0.0, 0.0, 0.0))
         tgt = {c: pct for c, _, _, pct in targets}
         for c, target_val, band, _ in targets:
             p = self.M.price(c)
@@ -792,7 +811,7 @@ class Bot:
             eq = self.live_equity()
             if eq is None:
                 return
-            plan = self._targets(sigs, eq)
+            plan = self._targets(sigs, eq) + [(c, 0.0, 0.0) for c in self.leftovers(lv['holdings']) if c in COINS and self.M.price(c)]
             ex = self.ex
             bal = ex.balances()
             sells = []
@@ -849,7 +868,7 @@ class Bot:
                 if lv['holdings'][c] < 10 ** -f['info']['lot_decimals']:
                     lv['holdings'].pop(c)
                 lv['cash'] += f['cash_delta']
-                self._record(f['side'], c, f['vol'], f['price'], f['cost'], f['fee'], reason, sigs[c]['target'], 'live',
+                self._record(f['side'], c, f['vol'], f['price'], f['cost'], f['fee'], reason, sigs[c]['target'] if c in sigs else 0.0, 'live',
                              {'txid': f['txids'], 'confirmed': f['confirmed'],
                               'limit_share': round(f['maker_vol'] / f['vol'], 3) if f['vol'] else 0.0})
                 self.save()
@@ -1007,6 +1026,11 @@ class Bot:
                 q = st['holdings'].get(PARK, 0.0)
                 positions.append({'coin': PARK, 'name': 'Gold fund: idle money waits here', 'qty': q, 'price': p,
                                   'value': q * p if p else None, 'target': self.park_share(self.signal) if self.parking() else 0.0, 'parked': True})
+            for c in self.leftovers(st['holdings']):
+                p = self.M.price(c)
+                q = st['holdings'][c]
+                positions.append({'coin': c, 'name': 'No longer selected: sold at the next check', 'qty': q, 'price': p,
+                                  'value': q * p if p else None, 'target': 0.0, 'leaving': True})
             now = time.time()
             next_close = (int(now) // DAY + 1) * DAY + 90 if self.market == 'crypto' else next_stock_close()
             return {

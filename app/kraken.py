@@ -199,11 +199,16 @@ class Kraken:
                 continue
             rest = math.floor(max(0.0, o['volume'] - o['vol']) * 10 ** lot + 1e-9) / 10 ** lot
             if rest > 0 and rest >= info['ordermin'] and rest * o['price'] >= max(info['costmin'], 5):
-                m = self.market_order(o['pair'], o['side'], rest, lot)
-                o['txids'] += m['txid']
-                f = m['fill'] or {'vol': rest, 'cost': rest * o['price'], 'fee': rest * o['price'] * o.get('est_fee', 0.008)}
-                o['confirmed'] = bool(m['fill'])
-                o['vol'] += f['vol']; o['cost'] += f['cost']; o['fee'] += f['fee']
+                try:
+                    m = self.market_order(o['pair'], o['side'], rest, lot)
+                except Exception as e:   # keep what the limit order already did; the other orders still get recorded
+                    m = None
+                    log(f"LIVE: instant order for {o['pair']} failed or could not be confirmed ({e}); check Kraken.", 'error')
+                if m:
+                    o['txids'] += m['txid']
+                    f = m['fill'] or {'vol': rest, 'cost': rest * o['price'], 'fee': rest * o['price'] * o.get('est_fee', 0.008)}
+                    o['confirmed'] = bool(m['fill'])
+                    o['vol'] += f['vol']; o['cost'] += f['cost']; o['fee'] += f['fee']
             o['price'] = o['cost'] / o['vol'] if o['vol'] else o['price']
             buy = o['side'] == 'buy'
             o['coin_delta'] = o['vol'] if buy else -o['vol']                  # fees are paid in USD (fciq)
@@ -212,9 +217,17 @@ class Kraken:
 
     def market_order(self, pair, side, volume, lot_decimals):
         vol = f'{volume:.{lot_decimals}f}'
-        params = {'pair': pair, 'type': side, 'ordertype': 'market', 'volume': vol, 'oflags': 'fciq'}
+        ref = int.from_bytes(os.urandom(4), 'big') & 0x7fffffff
+        params = {'pair': pair, 'type': side, 'ordertype': 'market', 'volume': vol, 'oflags': 'fciq', 'userref': str(ref)}
         self.private('AddOrder', dict(params, validate='true'))  # dry run first
-        res = self.private('AddOrder', params)
+        try:
+            res = self.private('AddOrder', params)
+        except Exception:
+            # rejected, or the answer got lost: ask Kraken whether it went through anyway (by our tag)
+            txid = self._find_by_ref(ref)   # if Kraken can't be asked either, that error goes to the caller
+            if not txid:
+                raise                       # it never arrived: nothing was traded
+            res = {'txid': [txid]}
         txids = res.get('txid', [])
         fill = None
         if txids:

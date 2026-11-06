@@ -215,8 +215,14 @@ input[type=number], input[type=text], input[type=password], select { font: 14px 
   .score { grid-template-columns: 1fr 1fr; }
   .grid-main, .grid-2 { grid-template-columns: minmax(0, 1fr); }
 }
+.lbl-short { display: none; }
 @media (max-width: 560px) {
   .top-inner, .tabs, main, .foot { padding-left: 16px; padding-right: 16px; }
+  .tabs { gap: 0; }
+  .tab { padding: 10px 9px; }
+  .lbl-long { display: none; } .lbl-short { display: inline; }
+  #posTable th:nth-child(2), #posTable td:nth-child(2), #posTable th:nth-child(3), #posTable td:nth-child(3) { display: none; }
+  #tradeTable th:nth-child(3), #tradeTable td:nth-child(3), #tradeTable th:nth-child(6), #tradeTable td:nth-child(6) { display: none; }
   .score { grid-template-columns: 1fr; }
   .form-grid { grid-template-columns: 1fr; }
   .chart { height: 320px; }

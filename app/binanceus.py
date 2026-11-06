@@ -17,12 +17,17 @@ API = 'https://api.binance.us'
 PAIRS = {'BTC': 'BTCUSD', 'ETH': 'ETHUSD', 'SOL': 'SOLUSD', 'XRP': 'XRPUSD', 'DOGE': 'DOGEUSD',
          'ADA': 'ADAUSD', 'LINK': 'LINKUSD', 'AVAX': 'AVAXUSD', 'LTC': 'LTCUSD'}
 DONE = ('FILLED', 'CANCELED', 'REJECTED', 'EXPIRED', 'EXPIRED_IN_MATCH')
+UNKNOWN = (-1006, -1007)   # Binance.US's own "execution status unknown" answers
 
 
 class BinanceUSError(Exception):
     def __init__(self, msg, code=None):
         super().__init__(msg)
         self.code = code
+
+
+class OrderUnknown(Exception):
+    """Binance.US could not say whether an order went through."""
 
 
 def _decimals(step):
@@ -174,26 +179,51 @@ class BinanceUS:
         o['cost'] += quote
         o['fee'] += fb * price + fq + fo
 
+    def _place(self, params, cid):
+        """Send an order. Returns Binance.US's answer, or None when it confirms the order does not exist.
+        Raises BinanceUSError for a clear rejection (nothing traded) and OrderUnknown when it cannot tell."""
+        try:
+            res = self.private('POST', '/api/v3/order', params)
+            if res.get('orderId') is not None:
+                return res
+            first = 'no order id in the answer'
+        except BinanceUSError as e:
+            if e.code not in UNKNOWN:
+                raise
+            first = e
+        except Exception as e:         # network trouble: the answer got lost, but did the order arrive?
+            first = e
+        missing, last = 0, first
+        for wait in (3, 5, 10):
+            self._sleep(wait)
+            try:
+                return self.query(params['symbol'], cid=cid)
+            except BinanceUSError as e:
+                if e.code == -2013:    # "order does not exist": ask twice to be sure
+                    missing += 1
+                    if missing == 2:
+                        return None
+                    continue
+                last = e
+            except Exception as e:
+                last = e
+        raise OrderUnknown(f'could not tell whether the order went through ({first}; {last})')
+
     def market_order(self, pair, side, volume, info, coin, est_fee=0.0002):
-        """Market order with a dry run first. Returns {'txid', 'qty', 'quote', 'fees', 'confirmed'}."""
+        """Market order with a dry run first. Returns {'txid', 'qty', 'quote', 'fees', 'confirmed'}.
+        Raises BinanceUSError when rejected and OrderUnknown when Binance.US cannot say whether it went through."""
         cid = 'tr' + os.urandom(8).hex()
         params = self._params(pair, side, 'MARKET', volume, info, cid=cid)
         self.private('POST', '/api/v3/order/test', params)
-        try:
-            res = self.private('POST', '/api/v3/order', params)
-        except BinanceUSError:
-            raise                      # a clear rejection: nothing was traded
-        except Exception:              # network trouble: did it go through?
-            self._sleep(2)
-            try:
-                res = self.query(pair, cid=cid)
-            except BinanceUSError as e:
-                if e.code == -2013:    # order does not exist
-                    return {'txid': [], 'qty': 0.0, 'quote': 0.0, 'fees': None, 'confirmed': True}
-                raise
+        res = self._place(params, cid)
+        if res is None:                # it never arrived: nothing was traded
+            return {'txid': [], 'qty': 0.0, 'quote': 0.0, 'fees': None, 'confirmed': True}
         oid = res.get('orderId')
         if res.get('status') not in DONE:
-            res = self._final_state(pair, oid)
+            try:
+                res = self._final_state(pair, oid)
+            except Exception:          # placed, but its fill can't be confirmed: count it as filled near the expected price
+                return {'txid': [str(oid)], 'qty': float(volume), 'quote': None, 'fees': None, 'confirmed': False}
         fills = res.get('fills')
         return {'txid': [str(oid)], 'qty': float(res.get('executedQty', 0) or 0), 'quote': float(res.get('cummulativeQuoteQty', 0) or 0),
                 'fees': self._commission(pair, oid, coin, fills), 'confirmed': True}
@@ -217,21 +247,15 @@ class BinanceUS:
                     log(f"LIVE: limit order for {o['pair']} not possible ({e}); using an instant order.", 'warn')
                 else:
                     try:
-                        o['oid'] = self.private('POST', '/api/v3/order', params).get('orderId')
+                        res = self._place(params, cid)
+                        o['oid'] = res.get('orderId') if res else None
                     except BinanceUSError as e:
                         if e.code != -2010:   # -2010: would trade immediately (post-only), so go instant
                             log(f"LIVE: limit order for {o['pair']} rejected ({e}); using an instant order.", 'warn')
-                    except Exception as e:
-                        try:
-                            o['oid'] = self.query(o['pair'], cid=cid).get('orderId')
-                        except BinanceUSError as e2:
-                            if e2.code != -2013:
-                                o['abort'] = True
-                        except Exception:
-                            o['abort'] = True
-                        if o['abort']:
-                            log(f"LIVE: could not tell whether the {o['pair']} order was placed ({e}). "
-                                'No further order sent for it this round; check Binance.US.', 'error')
+                    except Exception as e:    # it may be resting on the book: sending an instant order too could trade twice
+                        o['abort'] = True
+                        log(f"LIVE: could not tell whether the {o['pair']} order was placed ({e}). "
+                            'No further order sent for it this round; check Binance.US.', 'error')
             out.append(o)
         deadline = time.time() + wait_s
         waiting = [o for o in out if o['oid']]
@@ -263,11 +287,14 @@ class BinanceUS:
             if rest > 0 and rest >= info['ordermin'] and rest * o['price'] >= max(info['costmin'], 5):
                 try:
                     m = self.market_order(o['pair'], o['side'], rest, info, o['coin'], o.get('est_fee', 0.0002))
-                except Exception as e:
-                    log(f"LIVE: instant order for {o['pair']} failed ({e}).", 'error')
-                    continue
-                o['txids'] += m['txid']
-                if m['qty'] > 0:
-                    self._apply(o, o['side'], m['qty'], m['quote'], m['fees'])
+                except Exception as e:   # keep what the limit order already did
+                    m = None
+                    log(f"LIVE: instant order for {o['pair']} failed or could not be confirmed ({e}); check Binance.US.", 'error')
+                if m:
+                    o['txids'] += m['txid']
+                    o['confirmed'] = o['confirmed'] and m['confirmed']
+                    if m['qty'] > 0:
+                        quote = m['quote'] if m['quote'] is not None else m['qty'] * o['price']
+                        self._apply(o, o['side'], m['qty'], quote, m['fees'])
             o['price'] = o['cost'] / o['vol'] if o['vol'] else o['price']
         return out

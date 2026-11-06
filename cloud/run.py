@@ -10,7 +10,7 @@ repository secrets (KRAKEN_API_KEY + KRAKEN_API_SECRET, or BINANCEUS_API_KEY + B
 in data/config.json, "live": {"enabled": true, "confirm": "REAL MONEY", "exchange": "kraken" or "binanceus",
 "budget_usd": ..., "max_trade_usd": ...}.
 """
-import json, os, sys, time, traceback
+import hashlib, json, os, sys, time, traceback
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = os.path.join(ROOT, 'app')
@@ -46,7 +46,9 @@ def build_index():
     """The Pages site is the Mac app's page with paths pointing into app/static."""
     src = open(os.path.join(APP, 'static', 'index.html')).read()
     for name in ('style.css', 'app.js', 'vendor/lightweight-charts.standalone.production.js'):
-        src = src.replace(f'"/{name}"', f'"app/static/{name}"')
+        # ?v= changes with the file, so a browser never pairs a new page with an old cached script
+        v = hashlib.sha1(open(os.path.join(APP, 'static', name), 'rb').read()).hexdigest()[:10]
+        src = src.replace(f'"/{name}"', f'"app/static/{name}?v={v}"')
     src = src.replace('<script src="app/static/vendor', '<script>window.TREND_RIDER_CLOUD = true;</script>\n<script src="app/static/vendor', 1)
     with open(os.path.join(ROOT, 'index.html'), 'w') as f:
         f.write(src)

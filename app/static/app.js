@@ -122,7 +122,7 @@
     s.now = Date.now() / 1000;
     if (!STOCKS()) s.next_decision = (Math.floor(s.now / DAY) + 1) * DAY + 17 * 60;
     else if (s.next_decision < s.now) s.next_decision = s.now + 3600;
-    s.errors = Object.assign({}, s.errors, cloudErrors);
+    s.errors = Object.assign({}, s.errors, STOCKS() ? {} : cloudErrors);   // Coinbase prices only matter for crypto
     const age = s.now - s.cloud.run_ts;
     if (age > (STOCKS() ? 30 : 8) * 3600) s.errors.stale = `The cloud bot last ran ${dur(age)} ago (it normally runs every 6 hours). Check the Actions tab on GitHub.`;
     return s;
@@ -174,10 +174,14 @@
   }
 
   // ------------------------------------------------------------ routing
+  let shownView = null;
   function route() {
     const v = (location.hash || '#dashboard').slice(1);
     const view = ['dashboard', 'backtest', 'research', 'settings'].includes(v) ? v : 'dashboard';
+    const switched = shownView !== null && shownView !== view;
+    shownView = view;
     $$('.view').forEach((el) => { el.hidden = el.id !== 'view-' + view; });
+    if (switched) window.scrollTo(0, 0);   // a new tab opens at its top, not wherever the last one was scrolled to
     $$('.tab').forEach((t) => t.classList.toggle('on', t.dataset.view === view));
     if (view === 'research') loadResearch();
     if (view === 'dashboard') Object.values(charts).forEach((c) => c && c.timeScale && c.applyOptions({}));
@@ -260,7 +264,7 @@
       m.push({
         time: bt, position: t.side === 'buy' ? 'belowBar' : 'aboveBar', shape: t.side === 'buy' ? 'arrowUp' : 'arrowDown',
         color: t.side === 'buy' ? css('--up') : css('--down'),
-        text: `${t.mode === 'live' ? 'LIVE ' : ''}${t.side === 'buy' ? 'Buy' : 'Sell'} → ${Math.round(t.target * 100)}%`,
+        text: window.innerWidth < 560 ? '' : `${t.mode === 'live' ? 'LIVE ' : ''}${t.side === 'buy' ? 'Buy' : 'Sell'} → ${Math.round(t.target * 100)}%`,
       });
     });
     charts.candles.setMarkers(m);
@@ -281,6 +285,7 @@
     const setText = (sel, v) => { const el = $(sel); if (el) el.textContent = v; };
     setHidden('#liveSection', STOCKS()); setHidden('#stockLiveNote', !STOCKS()); setHidden('#customBox', !STOCKS()); setHidden('#parkBox', !STOCKS());
     setHidden('#feeNote', STOCKS());
+    setText('#footPrices', STOCKS() ? 'Prices: Yahoo Finance' : 'Prices: Coinbase (backup: Kraken)');
     setText('#raceNote', STOCKS() ? `Every strategy on your stocks, with your fees${S.park ? '; idle money waits in gold' : ''}` : 'Every strategy on your coins, with your fees');
     setText('#btIntro', STOCKS() ? `Runs every strategy on daily prices from Yahoo Finance (dividends included) with your fee, and compares them with simply buying once and holding.${S.park ? ' Idle money waits in the gold fund (GLD), as in your account; before GLD existed (November 2004) it counts as cash.' : ''} Past results do not predict future results.` : 'Runs every strategy on Coinbase daily prices with your fee, and compares them with simply buying once and holding. Past results do not predict future results.');
     setText('#btCoinLabel', STOCKS() ? 'Stock or fund' : 'Coin');
@@ -310,14 +315,15 @@
     $('#vHold').textContent = usd(he, 2);
     $('#vHoldSub').innerHTML = he ? `<span class="${cls(he - start)}">${pct(he / start - 1, 2)}</span> · ${esc(cfg.coins.join(' + '))} bought once` : 'Starts with the first price';
     if (eq && he) {
-      const d = eq - he;
-      $('#vDiff').innerHTML = `<span class="${cls(d)}">${d >= 0 ? '+' : ''}${usd(d, 2)}</span>`;
-      $('#vDiffSub').textContent = d >= 0 ? 'The bot is ahead of plain holding' : 'Plain holding is ahead right now';
+      const d = Math.round((eq - he) * 100) / 100;
+      $('#vDiff').innerHTML = `<span class="${cls(d)}">${d > 0 ? '+' : ''}${usd(d === 0 ? 0 : d, 2)}</span>`;
+      $('#vDiffSub').textContent = d === 0 ? 'Level with plain holding' : d > 0 ? 'The bot is ahead of plain holding' : 'Plain holding is ahead right now';
     }
-    const invested = eq ? (eq - S.cash) / eq : null;
+    const gold = (S.positions || []).filter((p) => p.parked).reduce((s, p) => s + (p.value || 0), 0);   // idle money waiting in the gold fund
+    const invested = eq ? (eq - S.cash - gold) / eq : null;
     $('#vInvested').textContent = invested === null ? '—' : Math.round(invested * 100) + '%';
     $('#vInvestedBar').style.width = invested === null ? '0' : Math.round(invested * 100) + '%';
-    $('#vCash').textContent = `${usd(S.cash, 2)} in cash`;
+    $('#vCash').textContent = gold > 0.005 ? `${usd(S.cash, 2)} in cash · ${usd(gold, 2)} waiting in gold` : `${usd(S.cash, 2)} in cash`;
 
     // coin tabs
     const tabs = $('#coinTabs');
@@ -432,7 +438,7 @@
   }
 
   function renderPositions() {
-    const rows = S.positions.map((p) => `<tr${p.parked ? ' class="parked"' : ''}><td><b>${p.coin}</b> <span class="muted">${esc(p.name)}</span></td>
+    const rows = S.positions.map((p) => `<tr${p.parked || p.leaving ? ' class="parked"' : ''}><td><b>${p.coin}</b> <span class="muted">${esc(p.name)}</span></td>
       <td class="r">${qty(p.qty)}</td><td class="r">${usd(p.price)}</td><td class="r">${usd(p.value, 2)}</td>
       <td class="r">${p.target === null || p.target === undefined ? '—' : Math.round(p.target * 100) + '%'}</td></tr>`);
     rows.push(`<tr><td><b>Cash</b> <span class="muted">USD</span></td><td class="r"></td><td class="r"></td><td class="r">${usd(S.cash, 2)}</td><td class="r"></td></tr>`);
