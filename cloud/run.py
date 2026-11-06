@@ -82,10 +82,15 @@ def run_market(bot, t0):
             bot.log(f'LIVE trading NOT started: Kraken has ${usd:,.2f} USD, budget is ${budget:,.2f} (minimum $20).', 'error')
             bot.cfg['live']['enabled'] = False
 
+    key = json.dumps([bot.cfg['coins'], bot.cfg['strategy'], bot.cfg.get('mix'), bot.cfg['min_invested_pct']], sort_keys=True)
+    changed = bot.state.get('last_decision_day') is not None and bot.state.get('cfg_key') not in (None, key)
     if bot.due() and (bot.market != 'crypto' or (time.time() % DAY) > 90):
         bot.decide('Daily decision')
+    elif changed or (bot.state.get('cfg_key') is None and bot.market != 'crypto' and bot.cfg['strategy'] == 'cruise'):
+        bot.decide('Settings changed')   # you edited config.json: move to the new targets now
     else:
         bot.signal = {c: bot.compute_signal(c) for c in bot.cfg['coins']}
+    bot.state['cfg_key'] = key
     bot.ensure_benchmark()
     bot.tick_equity()
     bot.race()
