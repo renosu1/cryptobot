@@ -56,7 +56,8 @@ STOCK_INDEX_FUNDS = {'SPY': 'S&P 500 index fund', 'QQQ': 'Nasdaq 100 index fund'
 STOCK_DEFAULTS = {
     'coins': ['SPY', 'QQQ'],      # 'coins' = the assets this account trades
     'custom': [],                 # tickers you added yourself
-    'strategy': 'growth',
+    'strategy': 'cruise',         # best on stocks in testing (see How it was tested)
+    'version': 2,
     'mix': {'a': 'auto', 'b': 'hold', 'a_pct': 50},
     'starting_cash': 10000.0,
     'fee_pct': 0.0,               # most US brokers charge no commission
@@ -104,7 +105,10 @@ def load_config():
     if cfg.get('strategy') not in S.STRATEGIES:
         cfg['strategy'] = 'growth'
     st = json.loads(json.dumps(STOCK_DEFAULTS))
-    st.update(cfg.get('stocks') or {})
+    saved = cfg.get('stocks') or {}
+    if saved and saved.get('version', 1) < 2:   # older default was Growth: move to Cruise once
+        saved = dict(saved, strategy='cruise', version=2)
+    st.update(saved)
     st['live'] = {'enabled': False}
     if st.get('strategy') not in S.STRATEGIES:
         st['strategy'] = 'growth'
@@ -1062,7 +1066,7 @@ class Handler(BaseHTTPRequestHandler):
                 years = max(1.0, min(30.0, float(q.get('years', 5))))
                 fee = max(0.0, min(2.0, float(q.get('fee', bot.cfg['fee_pct']))))
                 floor = max(0.0, min(100.0, float(q.get('floor', 0))))
-                names = ['growth', 'steady', 'auto'] + (['mix'] if bot.cfg['strategy'] == 'mix' else [])
+                names = ['growth', 'steady', 'auto', 'cruise'] + (['mix'] if bot.cfg['strategy'] == 'mix' else [])
                 res = {'runs': [dict(run_backtest(coin, s, years, fee, floor, bot.cfg.get('mix'), bot), label=strategy_label(dict(bot.cfg, strategy=s))) for s in names]}
                 return self._send(200, res)
             if u.path == '/api/news':

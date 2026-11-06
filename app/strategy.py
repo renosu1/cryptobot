@@ -14,6 +14,11 @@ AUTO    - reads the market regime. Uses Growth normally, switches to Steady whil
           the coin is in a confirmed downtrend (price below its 200-day average and
           that average falling over 20 days). When the Crypto Fear & Greed index shows
           extreme fear (20 or lower) outside a downtrend, it invests at least 60%.
+CRUISE  - built for stocks. Stays invested, but holds less when the market is jumpier
+          than usual (compared with its own last 3 years), and goes all in for 5 days
+          after a sharp 2-day dip while the price is above its 200-day average.
+          In testing it made about the same as holding on stocks with smaller drops;
+          on crypto it was worse than Growth.
 MIX     - splits the money between two strategies (for example 50% Auto, 50% Steady).
           The two targets are combined into one, so opposite trades cancel out and
           cost no fees.
@@ -30,10 +35,11 @@ STRATEGIES = {
     'growth': 'Growth',
     'steady': 'Steady',
     'auto': 'Auto',
+    'cruise': 'Cruise',
     'hold': 'Just hold',
     'mix': 'Mix',
 }
-BASE_STRATEGIES = ('growth', 'steady', 'auto', 'hold')  # what a Mix can combine
+BASE_STRATEGIES = ('growth', 'steady', 'auto', 'cruise', 'hold')  # what a Mix can combine
 REGIME_SMA, REGIME_SLOPE_DAYS = 200, 20
 FEAR_LEVEL, FEAR_FLOOR = 20, 0.6
 MIN_BARS = 220  # history needed before signals are meaningful
@@ -188,6 +194,60 @@ def auto_series(highs, lows, closes, fng=None, ann=365):
     return expo, votes
 
 
+def rsi_wilder(closes, n=2):
+    up = dn = None
+    a = 1.0 / n
+    out = [50.0]
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        u, w = max(d, 0.0), max(-d, 0.0)
+        up = u if up is None else a * u + (1 - a) * up
+        dn = w if dn is None else a * w + (1 - a) * dn
+        out.append(100.0 if dn == 0 else 100 - 100 / (1 + up / dn))
+    return out
+
+
+def cruise_series(closes, ann=252):
+    n = 21
+    logr = [0.0] + [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes))]
+    vol, s1, s2 = [], 0.0, 0.0
+    for i in range(len(closes)):
+        if i >= 1:
+            s1 += logr[i]; s2 += logr[i] ** 2
+        if i > n:
+            s1 -= logr[i - n]; s2 -= logr[i - n] ** 2
+        if i >= n:
+            m = s1 / n
+            vol.append(math.sqrt(max(0.0, s2 / n - m * m)))
+        else:
+            vol.append(None)
+    seen, target = [], []
+    for v in vol:
+        if v is not None:
+            seen.append(v)
+        win = seen[-3 * ann:]
+        target.append(sum(win) / len(win) if len(win) > 60 else None)
+    r2, m200 = rsi_wilder(closes, 2), sma(closes, 200)
+    expo, left = [], 0
+    for i in range(len(closes)):
+        base = 1.0
+        if vol[i] and target[i]:
+            base = quantize(min(1.0, target[i] / vol[i]), 0.1)
+        if m200[i] is not None and closes[i] > m200[i] and r2[i] < 10:
+            left = 5
+        expo.append(1.0 if left > 0 else base)
+        if left > 0:
+            left -= 1
+    last = len(closes) - 1
+    a = ann ** 0.5
+    votes = [{'name': 'Market jumpiness (last month)', 'up': None,
+              'detail': 'n/a' if not vol[last] else f'{vol[last] * a * 100:.0f}% a year vs {target[last] * a * 100:.0f}% normal' if target[last] else f'{vol[last] * a * 100:.0f}% a year'},
+             {'name': 'Price above its 200-day average', 'up': bool(m200[last] is not None and closes[last] > m200[last]), 'detail': ''},
+             {'name': 'Short dip to buy (2-day RSI under 10)', 'up': None,
+              'detail': f'RSI {r2[last]:.0f}' + (' → all in for a few days' if expo[last] == 1.0 and left >= 0 and r2[last] < 10 else '')}]
+    return expo, votes
+
+
 def exposure_series(strategy, highs, lows, closes, fng=None, mix=None, ann=365):
     """ann = trading days per year: 365 for crypto, 252 for stocks (only used for volatility)."""
     if strategy == 'growth':
@@ -196,6 +256,8 @@ def exposure_series(strategy, highs, lows, closes, fng=None, mix=None, ann=365):
         return steady_series(highs, lows, closes, ann=ann)
     if strategy == 'auto':
         return auto_series(highs, lows, closes, fng, ann)
+    if strategy == 'cruise':
+        return cruise_series(closes, ann)
     if strategy == 'mix':
         mix = mix or {}
         a, b = mix.get('a', 'auto'), mix.get('b', 'steady')

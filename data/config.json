@@ -26,7 +26,7 @@
       "QQQ"
     ],
     "custom": [],
-    "strategy": "growth",
+    "strategy": "cruise",
     "mix": {
       "a": "auto",
       "b": "hold",
@@ -39,6 +39,7 @@
     "rebalance_band_pct": 5,
     "live": {
       "enabled": false
-    }
+    },
+    "version": 2
   }
 }

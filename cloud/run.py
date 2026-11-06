@@ -106,7 +106,7 @@ def run_market(bot, t0):
     meta = server.read_json(meta_path, {})
     key = [bot.cfg['coins'], bot.cfg['strategy'], bot.cfg.get('mix'), bot.cfg['fee_pct'], bot.cfg['min_invested_pct']]
     if time.time() - meta.get('ts', 0) > 7 * DAY - 3600 or meta.get('key') != key:
-        names = ['growth', 'steady', 'auto'] + (['mix'] if bot.cfg['strategy'] == 'mix' else [])
+        names = ['growth', 'steady', 'auto', 'cruise'] + (['mix'] if bot.cfg['strategy'] == 'mix' else [])
         for coin in bot.cfg['coins']:
             for years in (1, 3, 5, 12):
                 try:

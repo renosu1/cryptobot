@@ -598,7 +598,7 @@
       $('#btMsg').hidden = false; $('#btMsg').textContent = 'Backtest failed: ' + e.message;
     } finally { btn.disabled = false; btn.textContent = 'Run backtest'; }
   }
-  const BT_COLORS = { growth: '--bot', steady: '--steady', auto: '--auto', mix: '--mix', hold: '--hold' };
+  const BT_COLORS = { growth: '--bot', steady: '--steady', auto: '--auto', cruise: '--live', mix: '--mix', hold: '--hold' };
   function drawBacktest(runs, c) {
     $('#btOut').hidden = false;
     const g = runs[0];
@@ -613,7 +613,7 @@
     charts.btSeries = lines.map((l) => { const s = charts.bt.addLineSeries({ color: css(BT_COLORS[l.key]), lineWidth: 2, title: l.key === 'mix' ? 'Mix' : l.label }); s.setData(uniq(l.data)); return s; });
     charts.btKeys = lines.map((l) => l.key);
     charts.bt.timeScale().fitContent();
-    $('#btLegend').innerHTML = lines.map((l) => `<span><span class="key key-${l.key === 'growth' ? 'bot' : l.key}"></span>${esc(l.label)}</span>`).join('');
+    $('#btLegend').innerHTML = lines.map((l) => `<span><span class="key key-${l.key === 'growth' ? 'bot' : l.key === 'cruise' ? 'live' : l.key}"></span>${esc(l.label)}</span>`).join('');
     const row = (name, st, trades) => `<tr><td><b>${esc(name)}</b></td><td class="r">${usd(10000 * (1 + st.total), 0)}</td><td class="r ${cls(st.total)}">${pct(st.total, 0)}</td><td class="r">${pct(st.cagr, 1)}</td><td class="r neg">${pct(st.maxdd, 0)}</td><td class="r">${st.sharpe.toFixed(2)}</td><td class="r">${trades === null ? '1' : trades}</td></tr>`;
     $('#btStats').innerHTML = `<thead><tr><th></th><th class="r">Ends at</th><th class="r">Total</th><th class="r">Per year</th><th class="r">Worst drop</th><th class="r" title="Return per unit of risk. Higher is better.">Sharpe</th><th class="r">Trades</th></tr></thead><tbody>` +
       runs.map((r) => row(r.label || S.strategies[r.strategy], r.stats, r.trades)).join('') + row('Just hold', g.hold_stats, null) + '</tbody>';
