@@ -156,11 +156,12 @@
         <div class="kv"><span>Coins</span><b>${esc(c.coins.join(', '))}</b></div>
         <div class="kv"><span>Fee per trade</span><b>${c.fee_pct}%</b></div>
         <div class="kv"><span>Always invested at least</span><b>${c.min_invested_pct}%</b></div>
+        ${STOCKS() ? `<div class="kv"><span>Idle money waits in</span><b>${S.park ? 'Gold fund (GLD)' : 'Cash'}</b></div>` : ''}
         <div class="kv"><span>Starting cash</span><b>${usd(c.starting_cash, 0)}</b></div>
         <div class="stack"><div><a class="btn btn-primary" href="${gh('edit/main/data/config.json')}" target="_blank" rel="noopener">Edit settings on GitHub</a> <a class="btn btn-ghost" href="${gh('actions/workflows/bot.yml')}" target="_blank" rel="noopener">Run the bot now</a></div>
-        <p class="small muted">${STOCKS() ? 'The stocks account uses the <code>"stocks"</code> section of the file. ' : ''}In the file: <code>"strategy"</code> can be <code>"growth"</code>, <code>"steady"</code>, <code>"auto"</code>, <code>"hold"</code> or <code>"mix"</code> (then set <code>"mix"</code>, for example <code>{"a": "auto", "b": "steady", "a_pct": 50}</code>). <code>"coins"</code> takes ${STOCKS() ? 'any US stock or fund ticker, such as SPY, QQQ or AAPL' : 'any of ' + esc(Object.keys(S.coins).join(', '))}. Click "Commit changes" to save; the bot uses the new settings on its next run, or press "Run the bot now" and then "Run workflow".</p></div>
+        <p class="small muted">${STOCKS() ? 'The stocks account uses the <code>"stocks"</code> section of the file. ' : ''}In the file: <code>"strategy"</code> can be <code>"growth"</code>, <code>"steady"</code>, <code>"auto"</code>, <code>"cruise"</code>, <code>"hold"</code> or <code>"mix"</code> (then set <code>"mix"</code>, for example <code>{"a": "auto", "b": "steady", "a_pct": 50}</code>). <code>"coins"</code> takes ${STOCKS() ? 'any US stock or fund ticker, such as SPY, QQQ or AAPL. <code>"park"</code> is where idle money waits: <code>"GLD"</code> (gold fund) or <code>"cash"</code>' : 'any of ' + esc(Object.keys(S.coins).join(', '))}. Click "Commit changes" to save; the bot uses the new settings on its next run, or press "Run the bot now" and then "Run workflow".</p></div>
       </div>
-      ${STOCKS() ? `<div class="card"><h2>Real money</h2><p class="muted">The stocks account is paper-only for now. In testing on 24 stock histories, trend rules cut the worst crashes but made less money than simply holding in every one.</p></div>` : `<div class="card"><h2>Real money with Kraken <span class="pill ${S.live_on ? 'pill-live' : 'pill-beta'}">${S.live_on ? 'On' : 'Off'}</span></h2>
+      ${STOCKS() ? `<div class="card"><h2>Real money</h2><p class="muted">The stocks account is paper-only for now. In testing, Cruise made about the same as holding with smaller crashes, and a bit more with idle money parked in gold.</p></div>` : `<div class="card"><h2>Real money with Kraken <span class="pill ${S.live_on ? 'pill-live' : 'pill-beta'}">${S.live_on ? 'On' : 'Off'}</span></h2>
         <div class="warn-box"><p><b>Real money can be lost.</b> In testing on 2023–2026 prices the bot made less than holding while losing less in crashes. Live trading has not been tested against a real Kraken account. Because this repository is public, the bot's real trades and balance would be visible to anyone. Paper-trade for at least a month first. You must be 18 or older.</p></div>
         <ol class="steps">
           <li>On kraken.com create an API key with only <b>Query funds</b>, <b>Query open orders &amp; trades</b>, <b>Query closed orders &amp; trades</b> and <b>Create &amp; modify orders</b>. Never allow withdrawals.</li>
@@ -277,12 +278,13 @@
     $('#fngChip').hidden = STOCKS();
     const setHidden = (sel, v) => { const el = $(sel); if (el) el.hidden = v; };
     const setText = (sel, v) => { const el = $(sel); if (el) el.textContent = v; };
-    setHidden('#liveSection', STOCKS()); setHidden('#stockLiveNote', !STOCKS()); setHidden('#customBox', !STOCKS());
-    setText('#btIntro', STOCKS() ? 'Runs every strategy on daily prices from Yahoo Finance (dividends included) with your fee, and compares them with simply buying once and holding. Past results do not predict future results.' : 'Runs every strategy on Coinbase daily prices with your fee, and compares them with simply buying once and holding. Past results do not predict future results.');
+    setHidden('#liveSection', STOCKS()); setHidden('#stockLiveNote', !STOCKS()); setHidden('#customBox', !STOCKS()); setHidden('#parkBox', !STOCKS());
+    setText('#raceNote', STOCKS() ? `Every strategy on your stocks, with your fees${S.park ? '; idle money waits in gold' : ''}` : 'Every strategy on your coins, with your fees');
+    setText('#btIntro', STOCKS() ? `Runs every strategy on daily prices from Yahoo Finance (dividends included) with your fee, and compares them with simply buying once and holding.${S.park ? ' Idle money waits in the gold fund (GLD), as in your account; before GLD existed (November 2004) it counts as cash.' : ''} Past results do not predict future results.` : 'Runs every strategy on Coinbase daily prices with your fee, and compares them with simply buying once and holding. Past results do not predict future results.');
     setText('#btCoinLabel', STOCKS() ? 'Stock or fund' : 'Coin');
     setText('#posHead', STOCKS() ? 'Stock' : 'Coin');
     setText('#assetsHeading', STOCKS() ? 'Stocks and funds the bot trades' : 'Coins the bot trades');
-    setText('#assetsNote', STOCKS() ? 'Money is split evenly. Index funds hold hundreds of companies, so no single one can sink you. In testing, holding made more money than the bot on every stock and fund; the bot mainly cuts crash losses.' : 'Money is split evenly. Bitcoin + Ethereum together did best over 2017–2026 (see How it was tested). Smaller coins have short histories; check them in Backtest first.');
+    setText('#assetsNote', STOCKS() ? 'Money is split evenly. Index funds hold hundreds of companies, so no single one can sink you. The bot mainly cuts crash losses: on 30 funds it had never seen, it fell less than holding on every one.' : 'Money is split evenly. Bitcoin + Ethereum together did best over 2017–2026 (see How it was tested). Careful with smaller coins: on 19 coins the bot had never seen, most lost money even with the bot (median −4% a year, vs −16% just holding). Check them in Backtest first.');
 
     // header
     const live = S.live_on;
@@ -428,7 +430,7 @@
   }
 
   function renderPositions() {
-    const rows = S.positions.map((p) => `<tr><td><b>${p.coin}</b> <span class="muted">${esc(p.name)}</span></td>
+    const rows = S.positions.map((p) => `<tr${p.parked ? ' class="parked"' : ''}><td><b>${p.coin}</b> <span class="muted">${esc(p.name)}</span></td>
       <td class="r">${qty(p.qty)}</td><td class="r">${usd(p.price)}</td><td class="r">${usd(p.value, 2)}</td>
       <td class="r">${p.target === null || p.target === undefined ? '—' : Math.round(p.target * 100) + '%'}</td></tr>`);
     rows.push(`<tr><td><b>Cash</b> <span class="muted">USD</span></td><td class="r"></td><td class="r"></td><td class="r">${usd(S.cash, 2)}</td><td class="r"></td></tr>`);
@@ -520,6 +522,7 @@
       $('#mixA').innerHTML = opts; $('#mixB').innerHTML = opts;
       const mx = cfg.mix || { a: 'auto', b: 'steady', a_pct: 50 };
       $('#mixA').value = mx.a; $('#mixB').value = mx.b; $('#mixPct').value = mx.a_pct;
+      $$('input[name=park]').forEach((r) => { r.checked = r.value === (cfg.park || 'GLD'); });
     }
     renderBackground();
     renderLive();
@@ -698,6 +701,7 @@
         rebalance_band_pct: +$('#sBand').value, notifications: $('#sNotify').checked,
         mix: { a: $('#mixA').value, b: $('#mixB').value, a_pct: +$('#mixPct').value },
       };
+      if (STOCKS()) body.park = ($$('input[name=park]').find((r) => r.checked) || {}).value || 'GLD';
       const msg = $('#savedMsg');
       try { await api('/api/settings', body); msg.hidden = false; msg.className = 'saved'; msg.textContent = 'Saved. The bot is re-checking its targets.'; setTimeout(refresh, 2500); }
       catch (e) { msg.hidden = false; msg.className = 'saved err-text'; msg.textContent = e.message; }

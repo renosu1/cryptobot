@@ -277,9 +277,13 @@ def apply_floor(x, floor):
 
 
 # ---------------------------------------------------------------- backtest
-def backtest(times, highs, lows, closes, strategy, cost=0.0045, floor=0.0, start_index=None, fng=None, mix=None, ann=365):
+def backtest(times, highs, lows, closes, strategy, cost=0.0045, floor=0.0, start_index=None, fng=None, mix=None, ann=365, idle=None):
     """Same accounting as the research: decide at the close, hold over the next
-    day, pay `cost` per unit of position change. Returns curves and stats."""
+    day, pay `cost` per unit of position change. Returns curves and stats.
+
+    `idle` (optional): per-bar returns earned by the money that is NOT invested,
+    e.g. gold when the stocks account parks idle money in GLD (None = cash, 0%).
+    Moving money between the asset and the parking place pays `cost` on both sides."""
     expo, _ = exposure_series(strategy, highs, lows, closes, fng, mix, ann)
     expo = [apply_floor(e, floor) for e in expo]
     s = MIN_BARS if start_index is None else start_index
@@ -292,10 +296,12 @@ def backtest(times, highs, lows, closes, strategy, cost=0.0045, floor=0.0, start
         # position decided at close i-1 is held from i-1 to i; trade cost when it changed
         change = abs(pos_today - prev_pos)
         r = closes[i] / closes[i - 1] - 1
-        e = eq[-1] * (1 + pos_today * r - change * cost)
+        park = idle[i] if idle is not None and i < len(idle) else None
+        legs = 2 if park is not None else 1
+        e = eq[-1] * (1 + pos_today * r + (1 - pos_today) * (park or 0.0) - change * cost * legs)
         if change > 1e-9:
             trades += 1
-            fees += eq[-1] * change * cost
+            fees += eq[-1] * change * cost * legs
         prev_pos = pos_today
         eq.append(e)
         hold.append(hold[-1] * (1 + r) if i > s else hold[-1] * (1 + r) * (1 - cost))

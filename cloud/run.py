@@ -66,7 +66,7 @@ def run_market(bot, t0):
             time.sleep(0.15)
         M.load_fng()
     else:
-        for c in bot.universe():
+        for c in bot.price_list():   # includes the gold fund when idle money waits there
             M.refresh_price(c)
             time.sleep(0.3)
 
@@ -82,7 +82,8 @@ def run_market(bot, t0):
             bot.log(f'LIVE trading NOT started: Kraken has ${usd:,.2f} USD, budget is ${budget:,.2f} (minimum $20).', 'error')
             bot.cfg['live']['enabled'] = False
 
-    key = json.dumps([bot.cfg['coins'], bot.cfg['strategy'], bot.cfg.get('mix'), bot.cfg['min_invested_pct']], sort_keys=True)
+    key = json.dumps([bot.cfg['coins'], bot.cfg['strategy'], bot.cfg.get('mix'), bot.cfg['min_invested_pct']]
+                     + ([bot.cfg.get('park')] if bot.market != 'crypto' else []), sort_keys=True)
     changed = bot.state.get('last_decision_day') is not None and bot.state.get('cfg_key') not in (None, key)
     if bot.due() and (bot.market != 'crypto' or (time.time() % DAY) > 90):
         bot.decide('Daily decision')
@@ -109,7 +110,8 @@ def run_market(bot, t0):
     prefix = '' if bot.market == 'crypto' else 'stocks_'
     meta_path = os.path.join(DATA, 'backtest', f'{prefix}meta.json')
     meta = server.read_json(meta_path, {})
-    key = [bot.cfg['coins'], bot.cfg['strategy'], bot.cfg.get('mix'), bot.cfg['fee_pct'], bot.cfg['min_invested_pct']]
+    key = [bot.cfg['coins'], bot.cfg['strategy'], bot.cfg.get('mix'), bot.cfg['fee_pct'], bot.cfg['min_invested_pct']] + \
+          ([bot.cfg.get('park')] if bot.market != 'crypto' else [])
     if time.time() - meta.get('ts', 0) > 7 * DAY - 3600 or meta.get('key') != key:
         names = ['growth', 'steady', 'auto', 'cruise'] + (['mix'] if bot.cfg['strategy'] == 'mix' else [])
         for coin in bot.cfg['coins']:
@@ -142,9 +144,11 @@ def main():
         cfg.pop('port', None)
         write(os.path.join(DATA, 'config.json'), cfg)
     server.CFG = server.load_config()
-    if 'stocks' not in server.read_json(os.path.join(DATA, 'config.json'), {}):
-        full = server.read_json(os.path.join(DATA, 'config.json'), {})
-        full['stocks'] = server.CFG['stocks']
+    full = server.read_json(os.path.join(DATA, 'config.json'), {})
+    if 'stocks' not in full or 'park' not in full['stocks']:
+        # show every stocks setting in config.json (new: "park" = where idle money waits, "GLD" or "cash")
+        full['stocks'] = dict(full.get('stocks') or server.CFG['stocks'], park=server.CFG['stocks']['park'])
+        full['stocks'].pop('live', None)
         with open(os.path.join(DATA, 'config.json'), 'w') as f:
             json.dump(full, f, indent=2)
     crypto = server.Bot('crypto')

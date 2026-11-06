@@ -64,8 +64,10 @@ STOCK_DEFAULTS = {
     'slippage_pct': 0.05,
     'min_invested_pct': 0,
     'rebalance_band_pct': 5,
+    'park': 'GLD',                # idle money waits in a gold fund ('cash' = plain cash); see How it was tested, round seven
     'live': {'enabled': False},
 }
+PARK = 'GLD'   # SPDR Gold Shares: where the stocks account parks money the strategy keeps out of the market
 CFG = None
 
 LOCK = threading.RLock()
@@ -113,6 +115,8 @@ def load_config():
     if st.get('strategy') not in S.STRATEGIES:
         st['strategy'] = 'growth'
     st['coins'] = [c for c in st.get('coins', []) if isinstance(c, str)][:8] or ['SPY']
+    if st.get('park') not in (PARK, 'cash'):
+        st['park'] = PARK
     cfg['stocks'] = st
     return cfg
 
@@ -492,6 +496,50 @@ class Bot:
                 out.append(c)
         return out
 
+    def price_list(self):
+        """Everything whose live price the bot needs (the market list plus the gold fund when used)."""
+        out = self.universe()
+        if self.market != 'crypto' and PARK not in out and (self.parking() or self.state['holdings'].get(PARK)):
+            out.append(PARK)
+        return out
+
+    # ---------- parking idle money (stocks account)
+    def parking(self):
+        """'GLD' when idle money should wait in the gold fund, else None (plain cash).
+        If you trade GLD yourself, idle money stays cash so the two never get mixed up."""
+        if self.market == 'crypto' or PARK in self.cfg['coins']:
+            return None
+        return PARK if self.cfg.get('park', PARK) == PARK else None
+
+    def park_returns(self, times):
+        """Daily return of the gold fund lined up with `times` (None where unknown), or None if not parking."""
+        if not self.parking() or not times:
+            return None
+        try:
+            rows = self.M.completed(self.M.load_daily(PARK, history_days=int((time.time() - times[0]) / DAY) + 10))
+            self.M.errors.pop('park', None)
+        except Exception as e:
+            self.M.errors['park'] = f'Gold fund prices unavailable, idle money counted as cash for now ({e})'
+            return None
+        day = lambda t: time.strftime('%Y-%m-%d', time.gmtime(t))
+        px = {day(r[0]): r[4] for r in rows}
+        live = self.M.price(PARK)
+        out, prev = [], None
+        for i, t in enumerate(times):
+            p = px.get(day(t))
+            if p is None and live and i == len(times) - 1:
+                p = live  # today's move so far
+            out.append(p / prev - 1 if (p and prev) else None)
+            prev = p if p else prev
+        return out
+
+    def park_share(self, sigs):
+        """Share of the account the strategy keeps out of the market (parked in gold), or None."""
+        coins = self.cfg['coins']
+        if not self.parking() or not all((sigs.get(c) or {}).get('ok') for c in coins):
+            return None
+        return sum((1 - sigs[c]['target']) / len(coins) for c in coins)
+
     # ---------- state
     def fresh_state(self):
         cash = float(self.cfg['starting_cash'])
@@ -600,6 +648,8 @@ class Bot:
                 if force:
                     self.M.load_daily(coin, force=True)
                 sigs[coin] = self.compute_signal(coin)
+            if self.market != 'crypto' and PARK in self.price_list() and PARK not in coins:
+                self.M.refresh_price(PARK)
         except Exception as e:
             self.log(f'Could not get price history, will retry in 5 minutes: {e}', 'error')
             return
@@ -623,6 +673,9 @@ class Bot:
                 self.save()
                 return
             summary = ', '.join(f"{c} {sigs[c]['target'] * 100:.0f}%" for c in coins)
+            pk = self.park_share(sigs)
+            if pk and pk > 0.005:
+                summary += f'; idle money in gold {pk * 100:.0f}% of the account'
             self.log(f'{reason}: target invested {summary}.')
             self.rebalance_paper(sigs, reason)
             if self.live_on():
@@ -649,7 +702,13 @@ class Bot:
         if eq is None:
             return
         orders = []
-        for c, target_val, band in self._targets(sigs, eq):
+        targets = [(c, tv, band, sigs[c]['target']) for c, tv, band in self._targets(sigs, eq)]
+        if self.market != 'crypto' and PARK not in self.cfg['coins'] and self.M.price(PARK) and (self.parking() or st['holdings'].get(PARK)):
+            share = self.park_share(sigs) or 0.0   # parking switched off: sell any gold that is left
+            band = float(self.cfg['rebalance_band_pct']) / 100 / len(self.cfg['coins'])
+            targets.append((PARK, eq * share, eq * band if share > 0 else 0.0, share))
+        tgt = {c: pct for c, _, _, pct in targets}
+        for c, target_val, band, _ in targets:
             p = self.M.price(c)
             cur = st['holdings'].get(c, 0.0) * p
             diff = target_val - cur
@@ -666,7 +725,7 @@ class Bot:
                 if st['holdings'][c] < 1e-12:
                     st['holdings'].pop(c)
                 st['cash'] += gross - fee
-                self._record('sell', c, qty, fill, gross, fee, reason, sigs[c]['target'])
+                self._record('sell', c, qty, fill, gross, fee, reason, tgt[c])
             else:
                 fill = p * (1 + self.slip)
                 spend = min(diff, st['cash'])
@@ -676,7 +735,7 @@ class Bot:
                 qty = (spend - fee) / fill
                 st['cash'] -= spend
                 st['holdings'][c] = st['holdings'].get(c, 0.0) + qty
-                self._record('buy', c, qty, fill, spend, fee, reason, sigs[c]['target'])
+                self._record('buy', c, qty, fill, spend, fee, reason, tgt[c])
         if not orders:
             self.log('No trade needed: already at the target.')
 
@@ -690,8 +749,10 @@ class Bot:
         del book[:-2000]
         verb = 'Bought' if side == 'buy' else 'Sold'
         tag = '' if mode == 'paper' else 'LIVE '
-        notify(f'{tag}{verb} {coin}', f'${usd:,.2f} at ${price:,.2f}. Now targeting {target * 100:.0f}% invested.')
-        self.log(f'{tag}{verb} {qty:.6f} {coin} at ${price:,.2f} (${usd:,.2f}, fee ${fee:,.2f}). Target {target * 100:.0f}% invested.',
+        aim = (f'{target * 100:.0f}% of the account waiting in gold' if coin == PARK and self.market != 'crypto' and coin not in self.cfg['coins']
+               else f'{target * 100:.0f}% invested')
+        notify(f'{tag}{verb} {coin}', f'${usd:,.2f} at ${price:,.2f}. Now targeting {aim}.')
+        self.log(f'{tag}{verb} {qty:.6f} {coin} at ${price:,.2f} (${usd:,.2f}, fee ${fee:,.2f}). Target {aim}.',
                  'trade')
 
     # ---------- live (Kraken)
@@ -804,7 +865,7 @@ class Bot:
                     every = 60 if us_market_open() else 1800
                     if time.time() - last_stats > every:
                         last_stats = time.time()
-                        for c in self.universe():
+                        for c in self.price_list():
                             self.M.refresh_price(c)
                             time.sleep(0.4)
                     if self.due() and time.time() - self.last_attempt > 300:
@@ -873,15 +934,15 @@ class Bot:
                 t = [r[0] for r in rows]; h = [r[2] for r in rows]; lo = [r[3] for r in rows]; c = [r[4] for r in rows]
                 if p:  # count today's move so far at the live price
                     t, h, lo, c = t + [int(time.time())], h + [max(h[-1], p)], lo + [min(lo[-1], p)], c + [p]
-                per_coin[coin] = (t, h, lo, c, self.M.fng_for(t))
+                per_coin[coin] = (t, h, lo, c, self.M.fng_for(t), self.park_returns(t))
             for wname, wstart in windows.items():
                 for st in names:
                     rets = []
-                    for coin, (t, h, lo, c, fng) in per_coin.items():
+                    for coin, (t, h, lo, c, fng, park) in per_coin.items():
                         si = next((i for i, x in enumerate(t) if x >= wstart - DAY), len(t) - 1)
                         si = min(max(si, S.MIN_BARS), len(t) - 1)
                         r = S.backtest(t, h, lo, c, st, cost=cost, floor=float(self.cfg['min_invested_pct']) / 100 if st != 'hold' else 0,
-                                       start_index=si, fng=fng, mix=self.cfg.get('mix'), ann=self.ann)
+                                       start_index=si, fng=fng, mix=self.cfg.get('mix'), ann=self.ann, idle=park if st != 'hold' else None)
                         rets.append(r['equity'][-1] - 1 if st != 'hold' else r['hold'][-1] - 1)
                     out[wname][st] = sum(rets) / len(rets) if rets else None
         except Exception as e:
@@ -900,6 +961,11 @@ class Bot:
                 q = st['holdings'].get(c, 0.0)
                 positions.append({'coin': c, 'name': self.M.name(c), 'qty': q, 'price': p,
                                   'value': q * p if p else None, 'target': (self.signal.get(c) or {}).get('target')})
+            if self.market != 'crypto' and PARK not in self.cfg['coins'] and (self.parking() or st['holdings'].get(PARK)):
+                p = self.M.price(PARK)
+                q = st['holdings'].get(PARK, 0.0)
+                positions.append({'coin': PARK, 'name': 'Gold fund: idle money waits here', 'qty': q, 'price': p,
+                                  'value': q * p if p else None, 'target': self.park_share(self.signal) if self.parking() else 0.0, 'parked': True})
             now = time.time()
             next_close = (int(now) // DAY + 1) * DAY + 90 if self.market == 'crypto' else next_stock_close()
             return {
@@ -922,6 +988,7 @@ class Bot:
                 'background': background_status(),
                 'fng': self.M.fng_latest() if (self.market == 'crypto' and getattr(self.M, 'fng', None)) else None,
                 'us_market_open': us_market_open() if self.market != 'crypto' else None,
+                'park': self.parking(),
                 'race': getattr(self, 'race_cache', None),
                 'mix_choices': {k: S.STRATEGIES[k] for k in S.BASE_STRATEGIES},
                 'portfolio': portfolio_summary(),
@@ -968,7 +1035,9 @@ def run_backtest(coin, strategy, years, fee_pct, floor_pct, mix=None, bot=None):
     si = max(si, S.MIN_BARS)
     cost = (fee_pct + 0.05) / 100
     out = {'coin': coin, 'strategy': strategy, 'from': t[si - 1], 'to': t[-1], 'cost_pct': cost * 100}
-    res = S.backtest(t, h, lo, c, strategy, cost=cost, floor=floor_pct / 100, start_index=si, fng=M.fng_for(t), mix=mix, ann=bot.ann)
+    park = bot.park_returns(t) if bot.market != 'crypto' and strategy != 'hold' else None
+    out['parked_in'] = PARK if park else None
+    res = S.backtest(t, h, lo, c, strategy, cost=cost, floor=floor_pct / 100, start_index=si, fng=M.fng_for(t), mix=mix, ann=bot.ann, idle=park)
     step = max(1, len(res['times']) // 700)
     out['curve'] = [[res['times'][i], res['equity'][i], res['hold'][i], res['exposure'][i]]
                     for i in range(0, len(res['times']), step)] + [[res['times'][-1], res['equity'][-1], res['hold'][-1], res['exposure'][-1]]]
@@ -1171,6 +1240,10 @@ class Handler(BaseHTTPRequestHandler):
                 cfg['mix'] = {'a': a, 'b': bb, 'a_pct': pct}
             if 'notifications' in b:
                 cfg['notifications'] = bool(b['notifications'])
+            if 'park' in b and bot.market != 'crypto':
+                if b['park'] not in (PARK, 'cash'):
+                    raise ValueError('Idle money can wait in gold (GLD) or in cash.')
+                cfg['park'] = b['park']
             for k, lo, hi in (('fee_pct', 0, 2), ('slippage_pct', 0, 1), ('min_invested_pct', 0, 100),
                               ('rebalance_band_pct', 1, 25), ('starting_cash', 100, 10_000_000)):
                 if k in b:
@@ -1181,7 +1254,8 @@ class Handler(BaseHTTPRequestHandler):
             save_config(CFG)
             bot.race_ts = 0
             bot.log(f"Settings saved: {strategy_label(cfg)}, {'coins' if bot.market == 'crypto' else 'stocks'} {', '.join(cfg['coins'])}, "
-                    f"fee {cfg['fee_pct']}%, minimum invested {cfg['min_invested_pct']:.0f}%.")
+                    f"fee {cfg['fee_pct']}%, minimum invested {cfg['min_invested_pct']:.0f}%"
+                    + (f", idle money in {'gold (GLD)' if bot.parking() else 'cash'}." if bot.market != 'crypto' else '.'))
             if reset_needed:
                 bot.state['hold_qty'] = {}
             threading.Thread(target=bot.decide, args=('Settings changed',), daemon=True).start()

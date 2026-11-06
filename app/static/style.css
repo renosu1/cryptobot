@@ -150,6 +150,7 @@ main { max-width: 1440px; margin: 0 auto; padding: 18px 24px 40px; }
 .tbl td { padding: 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .tbl tr:last-child td { border-bottom: 0; }
 .tbl th.r, .tbl td.r { text-align: right; }
+.tbl tr.parked td { background: var(--surface-2); }
 .side { font: 600 11px/1 var(--mono); padding: 4px 7px; border-radius: 5px; text-transform: uppercase; letter-spacing: .05em; }
 .side-buy { color: var(--up); background: color-mix(in srgb, var(--up) 15%, transparent); }
 .side-sell { color: var(--down); background: color-mix(in srgb, var(--down) 14%, transparent); }
@@ -204,6 +205,8 @@ input[type=number], input[type=text], input[type=password], select { font: 14px 
 .prose h2 { font-size: 20px; margin-top: 6px; }
 .prose h3 { font-size: 14px; color: var(--ink); margin-top: 24px; }
 .prose .tbl { margin: 8px 0 4px; }
+.prose .tbl.wrap td { white-space: normal; vertical-align: top; min-width: 7em; }
+.prose .tbl.wrap td:nth-child(2) { min-width: 18em; }
 .big-claim { font-size: 15px; color: var(--ink) !important; }
 
 .foot { max-width: 1440px; margin: 0 auto; padding: 0 24px 28px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
