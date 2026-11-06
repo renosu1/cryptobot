@@ -245,3 +245,7 @@ input[type=number], input[type=text], input[type=password], select { font: 14px 
 code { font: 12px var(--mono); background: var(--surface-2); border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; }
 
 a.btn { text-decoration: none; display: inline-block; }
+
+.portfolio-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; padding: 12px 18px; font-size: 13px; color: var(--ink-2); }
+.portfolio-bar b { color: var(--ink); font-size: 15px; }
+.portfolio-bar .muted { margin-left: auto; }

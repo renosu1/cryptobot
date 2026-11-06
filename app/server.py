@@ -924,6 +924,7 @@ class Bot:
                 'us_market_open': us_market_open() if self.market != 'crypto' else None,
                 'race': getattr(self, 'race_cache', None),
                 'mix_choices': {k: S.STRATEGIES[k] for k in S.BASE_STRATEGIES},
+                'portfolio': portfolio_summary(),
             }
 
     def public_config(self):
@@ -933,6 +934,17 @@ class Bot:
 
 BOT = None
 BOTS = {}
+
+
+def portfolio_summary():
+    """Both paper accounts together (crypto + stocks)."""
+    out = {}
+    for name, b in BOTS.items():
+        try:
+            out[name] = {'equity': b.equity(), 'hold_equity': b.hold_equity(), 'start': b.state['start_cash']}
+        except Exception:
+            pass
+    return out
 
 
 def strategy_label(cfg):

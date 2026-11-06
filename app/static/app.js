@@ -333,6 +333,7 @@
     }
     if (st && px) { const ch = px.price / st.open - 1; $('#pxChg').className = 'chg ' + cls(ch); $('#pxChg').textContent = pct(ch, 2) + (STOCKS() ? ' today' : ' 24h'); }
 
+    renderPortfolio();
     renderBrain();
     renderEquity();
     renderPositions();
@@ -343,6 +344,28 @@
     renderRace();
     if (CLOUD) { renderCloudChrome(); renderCloudSettings(); } else renderSettings();
     loadNews();
+  }
+
+  let otherAcct = null, otherAt = 0;
+  async function loadOther() {
+    if (!CLOUD || Date.now() - otherAt < 120000) return;
+    otherAt = Date.now();
+    try { otherAcct = await getJSON(`data/dashboard${STOCKS() ? '' : '_stocks'}.json?t=` + Date.now()); } catch (e) { otherAcct = null; }
+  }
+  function renderPortfolio() {
+    const p = Object.assign({}, S.portfolio || {});
+    const me = S.market || 'crypto', other = me === 'crypto' ? 'stocks' : 'crypto';
+    p[me] = { equity: S.equity, hold_equity: S.hold_equity, start: S.start_cash };
+    if (CLOUD) { loadOther(); if (otherAcct) p[other] = { equity: otherAcct.equity, hold_equity: otherAcct.hold_equity, start: otherAcct.start_cash }; }
+    const bar = $('#portfolioBar');
+    if (!p.crypto || !p.stocks || !p.crypto.equity || !p.stocks.equity) { bar.hidden = true; return; }
+    const tot = p.crypto.equity + p.stocks.equity, start = p.crypto.start + p.stocks.start;
+    const hold = (p.crypto.hold_equity || p.crypto.start) + (p.stocks.hold_equity || p.stocks.start);
+    bar.hidden = false;
+    bar.innerHTML = `<span>Both accounts together</span><b>${usd(tot, 0)}</b><span class="${cls(tot - start)}">${pct(tot / start - 1, 2)}</span>
+      <span>Just holding both: <b>${usd(hold, 0)}</b></span>
+      <span>Crypto ${Math.round(p.crypto.equity / tot * 100)}% · Stocks ${Math.round(p.stocks.equity / tot * 100)}%</span>
+      <span class="muted small">Mixing crypto and stocks smoothed the ride in testing (see How it was tested)</span>`;
   }
 
   function renderBrain() {
