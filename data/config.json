@@ -37,9 +37,7 @@
     "slippage_pct": 0.05,
     "min_invested_pct": 0,
     "rebalance_band_pct": 5,
-    "live": {
-      "enabled": false
-    },
-    "version": 2
+    "version": 2,
+    "park": "GLD"
   }
 }

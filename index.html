@@ -136,7 +136,7 @@
 
   <div class="grid-2">
     <div class="card">
-      <div class="card-head"><h2>Strategy race</h2><span class="muted small">Every strategy on your coins, with your fees</span></div>
+      <div class="card-head"><h2>Strategy race</h2><span class="muted small" id="raceNote">Every strategy on your coins, with your fees</span></div>
       <div class="table-wrap"><table class="tbl" id="raceTable"></table></div>
       <p class="muted small">● = best over the last 12 months. "Since you started" is the clean test: none of this data existed when the strategies were designed. Simulated from daily closes, so it can differ slightly from your actual paper trades.</p>
     </div>
@@ -193,7 +193,7 @@
         <label class="opt"><input type="radio" name="strategy" value="growth"><div><b>Growth</b><span>Five moving-average signals vote on how much to invest (0–100% in 20% steps). Best long-run results in testing. Bigger swings.</span></div></label>
         <label class="opt"><input type="radio" name="strategy" value="steady"><div><b>Steady</b><span>Sixteen trend checks vote, and it invests less when the market gets extra jumpy. Smallest crashes in testing; a bit lower returns.</span></div></label>
         <label class="opt"><input type="radio" name="strategy" value="auto"><div><b>Auto</b><span>Reads the market: Growth in up and sideways markets, switches to Steady in a confirmed downtrend, and buys at least 60% when the Fear &amp; Greed index shows extreme fear outside a downtrend. Smaller crashes than Growth in testing; similar returns.</span></div></label>
-        <label class="opt"><input type="radio" name="strategy" value="cruise"><div><b>Cruise</b><span>Built for stocks. Stays invested, holds less when the market is jumpier than usual, and buys short dips while the long-term trend is up. On 24 stock histories it made about the same as holding with smaller drops. On crypto it was worse than Growth.</span></div></label>
+        <label class="opt"><input type="radio" name="strategy" value="cruise"><div><b>Cruise</b><span>Built for stocks. Stays invested, holds less when the market is jumpier than usual, and buys short dips while the long-term trend is up. On 30 funds it had never seen, it had a smaller worst drop than holding on every one. On crypto it was worse than Growth.</span></div></label>
         <label class="opt"><input type="radio" name="strategy" value="mix"><div><b>Mix two strategies</b><span>Splits the money between two strategies. Trades are combined, so when one buys and the other sells, nothing is traded and no fee is paid.</span>
           <div class="mix-row">
             <span class="pct"><input id="mixPct" type="number" min="10" max="90" step="10" value="50" aria-label="Percent in the first strategy">%</span>
@@ -209,6 +209,13 @@
       <div id="customBox" class="form-row" hidden>
         <label>Add a stock ticker <input id="customTicker" type="text" placeholder="e.g. AAPL" autocomplete="off" spellcheck="false" maxlength="10"></label>
         <button class="btn btn-ghost" id="customAdd" type="button">Add</button>
+      </div>
+      <div id="parkBox" hidden>
+        <h3>Where idle money waits</h3>
+        <div class="choice">
+          <label class="opt"><input type="radio" name="park" value="GLD"><div><b>Gold fund (GLD)</b><span>When the strategy steps out of stocks, that money buys gold until it steps back in. Gold tends to hold up when stocks are in trouble. In testing it added about 1–2% a year when gold did well and roughly tied cash during gold's worst decades (1981–2004).</span></div></label>
+          <label class="opt"><input type="radio" name="park" value="cash"><div><b>Cash</b><span>Idle money just waits and earns nothing in this paper account.</span></div></label>
+        </div>
       </div>
       <h3>Trading costs and rules</h3>
       <div class="form-grid">
@@ -256,7 +263,7 @@
       </div>
       <div id="stockLiveNote" hidden>
         <h2 class="mt">Real money</h2>
-        <p class="muted">The stocks account is paper-only for now. In testing on 24 stock histories, trend rules cut the worst crashes but made less money than simply holding in every one, so there is no rush to trade it for real. A broker with a trading API (such as Alpaca) could be connected later.</p>
+        <p class="muted">The stocks account is paper-only for now. In testing, Cruise made about the same as holding with smaller crashes, and a bit more with idle money parked in gold. A broker with a trading API (such as Alpaca) could be connected later.</p>
       </div>
     </div>
   </div>
