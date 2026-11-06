@@ -23,6 +23,8 @@ sys.path.insert(0, HERE)
 import strategy as S
 from net import get_json, http_request, NetError
 from kraken import Kraken, KrakenError
+from binanceus import BinanceUS, BinanceUSError
+EXCHANGES = {'kraken': Kraken, 'binanceus': BinanceUS}
 
 VERSION = '1.1.0'
 COINS = {
@@ -45,11 +47,11 @@ DEFAULT_CONFIG = {
     'mix': {'a': 'auto', 'b': 'steady', 'a_pct': 50},
     'notifications': True,   # macOS notification on every trade
     'starting_cash': 10000.0,
-    'fee_pct': 0.40,          # per trade, % (Kraken Pro taker fee at the lowest tier)
+    'fee_pct': 0.40,          # per trade, % (Kraken limit-order fee at the entry tier; Binance.US: 0% limit / 0.02% instant)
     'slippage_pct': 0.05,     # extra price you lose on a market order, %
     'min_invested_pct': 0,    # never go below this much invested (0 = let the bot decide)
     'rebalance_band_pct': 5,  # ignore drifts smaller than this share of a coin's slot
-    'live': {'enabled': False, 'budget_usd': 100.0, 'max_trade_usd': 100.0,
+    'live': {'enabled': False, 'budget_usd': 100.0, 'max_trade_usd': 100.0, 'exchange': 'kraken',
              'limit_orders': True, 'limit_wait_min': 30},   # limit first (maker fee), instant order after 30 min
     'port': 8765,
 }
@@ -477,12 +479,15 @@ class Bot:
         self.last_signal = 0
         self.signal = {}   # coin -> latest decision info
         self.next_decision = None
-        self.kraken = None
+        self.ex = None   # the exchange for real-money trading (Kraken or Binance.US), if connected
         sec = {} if market != 'crypto' else read_json(os.path.join(DATA, 'secrets.json'), {})
-        if os.environ.get('KRAKEN_API_KEY') and os.environ.get('KRAKEN_API_SECRET'):  # cloud: GitHub Secrets
-            sec = {'key': os.environ['KRAKEN_API_KEY'], 'secret': os.environ['KRAKEN_API_SECRET']}
+        if market == 'crypto' and os.environ.get('TREND_RIDER_CLOUD'):   # cloud: keys come from GitHub Secrets
+            name = self.cfg['live'].get('exchange', 'kraken')
+            env = 'BINANCEUS' if name == 'binanceus' else 'KRAKEN'
+            if os.environ.get(f'{env}_API_KEY') and os.environ.get(f'{env}_API_SECRET'):
+                sec = {'exchange': name, 'key': os.environ[f'{env}_API_KEY'], 'secret': os.environ[f'{env}_API_SECRET']}
         if sec.get('key') and sec.get('secret'):
-            self.kraken = Kraken(sec['key'], sec['secret'])
+            self.ex = EXCHANGES.get(sec.get('exchange', 'kraken'), Kraken)(sec['key'], sec['secret'])
         if not self.state:
             self.state = self.fresh_state()
             self.save()
@@ -573,7 +578,7 @@ class Bot:
             return False  # stocks are paper-only for now
         if os.environ.get('TREND_RIDER_CLOUD') and (self.cfg['live'].get('confirm') or '').strip().upper() != 'REAL MONEY':
             return False  # in the cloud, config.json must also contain "confirm": "REAL MONEY"
-        return bool(self.cfg['live'].get('enabled')) and self.kraken is not None
+        return bool(self.cfg['live'].get('enabled')) and self.ex is not None
 
     # ---------- valuation
     def equity(self):
@@ -761,7 +766,7 @@ class Bot:
         self.log(f'{tag}{verb} {qty:.6f} {coin} at ${price:,.2f} (${usd:,.2f}, fee ${fee:,.2f}). Target {aim}.',
                  'trade')
 
-    # ---------- live (Kraken)
+    # ---------- live (Kraken or Binance.US)
     def live_equity(self):
         lv = self.state['live']
         v = lv['cash']
@@ -774,7 +779,7 @@ class Bot:
 
     def rebalance_live(self, sigs, reason):
         """Trades only the bot's own budget. Never sells coins the bot did not buy.
-        Sells first, then buys with the freed cash. Each order is a limit order first (Kraken's lower maker
+        Sells first, then buys with the freed cash. Each order is a limit order first (the exchange's lower maker
         fee); whatever has not filled after `limit_wait_min` minutes goes out as an instant (market) order."""
         if not LIVE_LOCK.acquire(blocking=False):
             self.log('LIVE: the previous orders are still working; nothing new sent this round.', 'warn')
@@ -788,24 +793,25 @@ class Bot:
             if eq is None:
                 return
             plan = self._targets(sigs, eq)
-            bal = self.kraken.balances()
+            ex = self.ex
+            bal = ex.balances()
             sells = []
             for c, target_val, band in plan:
                 p = self.M.price(c)
                 diff = target_val - lv['holdings'].get(c, 0.0) * p
                 if diff >= 0 or -diff < max(band, 10.0):
                     continue
-                info = self.kraken.pair_info(COINS[c]['kr'])
-                coin_bal = sum(bal.get(k, 0.0) for k in COINS[c]['kr_bal'])
+                info = ex.pair_info(ex.pair(c))
+                coin_bal = ex.coin_balance(bal, c)
                 qty = min(lv['holdings'].get(c, 0.0), coin_bal, min(-diff, cap) / p)
                 qty = math.floor(qty * 10 ** info['lot_decimals']) / 10 ** info['lot_decimals']
                 if qty < info['ordermin'] or qty * p < max(info['costmin'], 5):
-                    self.log(f'LIVE: sell of {c} too small for Kraken, skipped.', 'warn')
+                    self.log(f'LIVE: sell of {c} too small for {ex.NAME}, skipped.', 'warn')
                     continue
-                sells.append({'coin': c, 'pair': COINS[c]['kr'], 'side': 'sell', 'volume': qty, 'info': info,
+                sells.append({'coin': c, 'pair': ex.pair(c), 'side': 'sell', 'volume': qty, 'info': info,
                               'price': p, 'est_fee': self.fee})
             self._live_execute(sells, wait, sigs, reason)
-            usd_bal = sum(self.kraken.balances().get(k, 0.0) for k in ('ZUSD', 'USD'))
+            usd_bal = ex.usd_balance(ex.balances())
             cash = min(lv['cash'], usd_bal * 0.995)
             buys = []
             for c, target_val, band in plan:
@@ -813,15 +819,15 @@ class Bot:
                 diff = target_val - lv['holdings'].get(c, 0.0) * p
                 if diff <= 0 or diff < max(band, 10.0):
                     continue
-                info = self.kraken.pair_info(COINS[c]['kr'])
+                info = ex.pair_info(ex.pair(c))
                 spend = min(diff, cap, cash)
                 qty = spend * (1 - self.fee) / (p * (1 + self.slip))
                 qty = math.floor(qty * 10 ** info['lot_decimals']) / 10 ** info['lot_decimals']
                 if qty < info['ordermin'] or qty * p < max(info['costmin'], 5):
-                    self.log(f'LIVE: buy of {c} too small for Kraken (or budget used up), skipped.', 'warn')
+                    self.log(f'LIVE: buy of {c} too small for {ex.NAME} (or budget used up), skipped.', 'warn')
                     continue
                 cash -= spend
-                buys.append({'coin': c, 'pair': COINS[c]['kr'], 'side': 'buy', 'volume': qty, 'info': info,
+                buys.append({'coin': c, 'pair': ex.pair(c), 'side': 'buy', 'volume': qty, 'info': info,
                              'price': p, 'est_fee': self.fee})
             self._live_execute(buys, wait, sigs, reason)
         finally:
@@ -831,22 +837,18 @@ class Bot:
         if not orders:
             return
         if wait:
-            self.log(f"LIVE: {len(orders)} limit order(s) placed at the best price on Kraken's book; "
+            self.log(f"LIVE: {len(orders)} limit order(s) placed at the best price on {self.ex.NAME}'s book; "
                      f'anything not filled within {wait / 60:.0f} minutes becomes an instant order.')
-        for f in self.kraken.limit_first(orders, wait_s=wait, log=self.log):
+        for f in self.ex.limit_first(orders, wait_s=wait, log=self.log):
             if f['abort'] or f['vol'] <= 0:
                 continue
             c = f['coin']
             with LOCK:
                 lv = self.state['live']
-                if f['side'] == 'sell':
-                    lv['holdings'][c] = max(0.0, lv['holdings'].get(c, 0.0) - f['vol'])
-                    if lv['holdings'][c] < 10 ** -f['info']['lot_decimals']:
-                        lv['holdings'].pop(c)
-                    lv['cash'] += f['cost'] - f['fee']
-                else:
-                    lv['holdings'][c] = lv['holdings'].get(c, 0.0) + f['vol']
-                    lv['cash'] -= f['cost'] + f['fee']
+                lv['holdings'][c] = max(0.0, lv['holdings'].get(c, 0.0) + f['coin_delta'])   # fees included
+                if lv['holdings'][c] < 10 ** -f['info']['lot_decimals']:
+                    lv['holdings'].pop(c)
+                lv['cash'] += f['cash_delta']
                 self._record(f['side'], c, f['vol'], f['price'], f['cost'], f['fee'], reason, sigs[c]['target'], 'live',
                              {'txid': f['txids'], 'confirmed': f['confirmed'],
                               'limit_share': round(f['maker_vol'] / f['vol'], 3) if f['vol'] else 0.0})
@@ -1013,7 +1015,8 @@ class Bot:
                 'coins': {k: self.M.name(k) for k in self.universe()},
                 'index_funds': STOCK_INDEX_FUNDS if self.market != 'crypto' else None,
                 'strategies': S.STRATEGIES,
-                'paused': self.paused, 'live_on': self.live_on(), 'has_keys': self.kraken is not None,
+                'paused': self.paused, 'live_on': self.live_on(), 'has_keys': self.ex is not None,
+                'exchange': self.ex.NAME if self.ex else None,
                 'equity': eq, 'hold_equity': he, 'cash': st['cash'], 'start_cash': st['start_cash'],
                 'created': st['created'], 'positions': positions,
                 'signals': self.signal, 'next_decision': next_close,
@@ -1199,7 +1202,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, {'error': 'Not found'})
             with open(full, 'rb') as f:
                 return self._send(200, f.read(), MIME.get(os.path.splitext(full)[1], 'application/octet-stream'))
-        except (NetError, ValueError, KrakenError) as e:
+        except (NetError, ValueError, KrakenError, BinanceUSError) as e:
             return self._send(502, {'error': str(e)})
         except Exception as e:
             traceback.print_exc()
@@ -1220,7 +1223,7 @@ class Handler(BaseHTTPRequestHandler):
         p = urllib.parse.urlparse(self.path).path
         try:
             return self._send(200, self.route_post(p, body))
-        except (NetError, ValueError, KrakenError) as e:
+        except (NetError, ValueError, KrakenError, BinanceUSError) as e:
             return self._send(400, {'error': str(e)})
         except Exception as e:
             traceback.print_exc()
@@ -1229,7 +1232,7 @@ class Handler(BaseHTTPRequestHandler):
     def route_post(self, p, b):
         bot = BOTS.get(b.get('market', 'crypto'), BOT)
         if bot.market != 'crypto' and p.startswith('/api/live/'):
-            raise ValueError('Live trading is only available for crypto (Kraken) right now.')
+            raise ValueError('Live trading is only available for crypto (Kraken or Binance.US) right now.')
         if p == '/api/decide':
             threading.Thread(target=bot.decide, args=('Manual check',), daemon=True).start()
             return {'ok': True}
@@ -1315,38 +1318,45 @@ class Handler(BaseHTTPRequestHandler):
             key, secret = (b.get('key') or '').strip(), (b.get('secret') or '').strip()
             if not key or not secret:
                 raise ValueError('Paste both the API key and the private key.')
-            k = Kraken(key, secret)
+            name = b.get('exchange') or 'kraken'
+            if name not in EXCHANGES:
+                raise ValueError('Choose Kraken or Binance.US.')
+            if bot.live_on():
+                raise ValueError('Stop live trading before changing exchange keys.')
+            k = EXCHANGES[name](key, secret)
             bal = k.balances()  # fails loudly if wrong
-            write_json(os.path.join(DATA, 'secrets.json'), {'key': key, 'secret': secret}, private=True)
-            bot.kraken = k
-            bot.log('Kraken connected (keys saved on this Mac only).')
+            write_json(os.path.join(DATA, 'secrets.json'), {'exchange': name, 'key': key, 'secret': secret}, private=True)
+            bot.ex = k
+            bot.cfg['live']['exchange'] = name
+            save_config(CFG)
+            bot.log(f'{k.NAME} connected (keys saved on this Mac only).')
             return {'ok': True, 'balances': bal}
         if p == '/api/live/test':
-            if not bot.kraken:
-                raise ValueError('Connect Kraken first.')
-            return {'ok': True, 'balances': bot.kraken.balances()}
+            if not bot.ex:
+                raise ValueError('Connect an exchange first.')
+            return {'ok': True, 'balances': bot.ex.balances()}
         if p == '/api/live/forget':
             try:
                 os.remove(os.path.join(DATA, 'secrets.json'))
             except FileNotFoundError:
                 pass
-            bot.kraken = None
+            name = bot.ex.NAME if bot.ex else 'Exchange'
+            bot.ex = None
             bot.cfg['live']['enabled'] = False
             save_config(CFG)
-            bot.log('Kraken keys removed. Live trading is off.')
+            bot.log(f'{name} keys removed. Live trading is off.')
             return {'ok': True}
         if p == '/api/live/enable':
-            if not bot.kraken:
-                raise ValueError('Connect Kraken first.')
+            if not bot.ex:
+                raise ValueError('Connect an exchange first.')
             if (b.get('confirm') or '').strip().upper() != 'REAL MONEY':
                 raise ValueError('Type REAL MONEY to confirm.')
             budget = float(b.get('budget_usd', 0)); cap = float(b.get('max_trade_usd', 0) or budget)
             if budget < 20 or cap < 10:
                 raise ValueError('Budget must be at least $20 and the daily limit at least $10.')
-            bal = bot.kraken.balances()
-            usd = sum(bal.get(k, 0.0) for k in ('ZUSD', 'USD'))
+            usd = bot.ex.usd_balance(bot.ex.balances())
             if usd < budget:
-                raise ValueError(f'Your Kraken account has ${usd:,.2f} USD, less than the ${budget:,.2f} budget.')
+                raise ValueError(f'Your {bot.ex.NAME} account has ${usd:,.2f} USD, less than the ${budget:,.2f} budget.')
             with LOCK:
                 bot.cfg['live'].update({'enabled': True, 'budget_usd': budget, 'max_trade_usd': cap})
                 save_config(CFG)
@@ -1359,7 +1369,7 @@ class Handler(BaseHTTPRequestHandler):
         if p == '/api/live/disable':
             bot.cfg['live']['enabled'] = False
             save_config(CFG)
-            bot.log('Live trading OFF. Coins already bought stay in your Kraken account.', 'warn')
+            bot.log(f"Live trading OFF. Coins already bought stay in your {bot.ex.NAME if bot.ex else 'exchange'} account.", 'warn')
             return {'ok': True}
         if p == '/api/quit':
             if background_status()['installed']:

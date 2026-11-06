@@ -13,6 +13,9 @@ import base64, hashlib, hmac, json, math, os, time, urllib.parse
 from net import http_request
 
 API = 'https://api.kraken.com'
+PAIRS = {'BTC': ('XBTUSD', ['XXBT', 'XBT']), 'ETH': ('ETHUSD', ['XETH', 'ETH']), 'SOL': ('SOLUSD', ['SOL']),
+         'XRP': ('XRPUSD', ['XXRP', 'XRP']), 'DOGE': ('XDGUSD', ['XXDG', 'XDG']), 'ADA': ('ADAUSD', ['ADA']),
+         'LINK': ('LINKUSD', ['LINK']), 'AVAX': ('AVAXUSD', ['AVAX']), 'LTC': ('LTCUSD', ['XLTC', 'LTC'])}
 
 
 def sign(path, data, secret_b64):
@@ -29,6 +32,8 @@ class KrakenError(Exception):
 
 
 class Kraken:
+    NAME = 'Kraken'
+
     def __init__(self, key, secret):
         self.key, self.secret = key.strip(), secret.strip()
         self._last_nonce = 0
@@ -64,7 +69,19 @@ class Kraken:
             raise KrakenError(', '.join(j['error']))
         return j.get('result', {})
 
-    # -- helpers
+    # -- helpers (same interface as binanceus.BinanceUS)
+    @staticmethod
+    def pair(coin):
+        return PAIRS[coin][0]
+
+    @staticmethod
+    def usd_balance(bal):
+        return sum(bal.get(k, 0.0) for k in ('ZUSD', 'USD'))
+
+    @staticmethod
+    def coin_balance(bal, coin):
+        return sum(bal.get(k, 0.0) for k in PAIRS[coin][1])
+
     def balances(self):
         return {k: float(v) for k, v in self.private('Balance').items()}
 
@@ -188,6 +205,9 @@ class Kraken:
                 o['confirmed'] = bool(m['fill'])
                 o['vol'] += f['vol']; o['cost'] += f['cost']; o['fee'] += f['fee']
             o['price'] = o['cost'] / o['vol'] if o['vol'] else o['price']
+            buy = o['side'] == 'buy'
+            o['coin_delta'] = o['vol'] if buy else -o['vol']                  # fees are paid in USD (fciq)
+            o['cash_delta'] = -(o['cost'] + o['fee']) if buy else o['cost'] - o['fee']
         return out
 
     def market_order(self, pair, side, volume, lot_decimals):

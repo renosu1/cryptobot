@@ -161,14 +161,15 @@
         <div class="stack"><div><a class="btn btn-primary" href="${gh('edit/main/data/config.json')}" target="_blank" rel="noopener">Edit settings on GitHub</a> <a class="btn btn-ghost" href="${gh('actions/workflows/bot.yml')}" target="_blank" rel="noopener">Run the bot now</a></div>
         <p class="small muted">${STOCKS() ? 'The stocks account uses the <code>"stocks"</code> section of the file. ' : ''}In the file: <code>"strategy"</code> can be <code>"growth"</code>, <code>"steady"</code>, <code>"auto"</code>, <code>"cruise"</code>, <code>"hold"</code> or <code>"mix"</code> (then set <code>"mix"</code>, for example <code>{"a": "auto", "b": "steady", "a_pct": 50}</code>). <code>"coins"</code> takes ${STOCKS() ? 'any US stock or fund ticker, such as SPY, QQQ or AAPL. <code>"park"</code> is where idle money waits: <code>"GLD"</code> (gold fund) or <code>"cash"</code>' : 'any of ' + esc(Object.keys(S.coins).join(', '))}. Click "Commit changes" to save; the bot uses the new settings on its next run, or press "Run the bot now" and then "Run workflow".</p></div>
       </div>
-      ${STOCKS() ? `<div class="card"><h2>Real money</h2><p class="muted">The stocks account is paper-only for now. In testing, Cruise made about the same as holding with smaller crashes, and a bit more with idle money parked in gold.</p></div>` : `<div class="card"><h2>Real money with Kraken <span class="pill ${S.live_on ? 'pill-live' : 'pill-beta'}">${S.live_on ? 'On' : 'Off'}</span></h2>
-        <div class="warn-box"><p><b>Real money can be lost.</b> In testing on 2023–2026 prices the bot made less than holding while losing less in crashes. Live trading has not been tested against a real Kraken account. Because this repository is public, the bot's real trades and balance would be visible to anyone. Paper-trade for at least a month first. You must be 18 or older.</p></div>
+      ${STOCKS() ? `<div class="card"><h2>Real money</h2><p class="muted">The stocks account is paper-only for now. In testing, Cruise made about the same as holding with smaller crashes, and a bit more with idle money parked in gold.</p></div>` : `<div class="card"><h2>Real money (Kraken or Binance.US) <span class="pill ${S.live_on ? 'pill-live' : 'pill-beta'}">${S.live_on ? 'On' : 'Off'}</span></h2>
+        <div class="warn-box"><p><b>Real money can be lost.</b> In testing on 2023–2026 prices the bot made less than holding while losing less in crashes. Live trading has not been tested against a real exchange account. Because this repository is public, the bot's real trades and balance would be visible to anyone. Paper-trade for at least a month first. You must be 18 or older.</p></div>
+        <p class="small muted"><b>Fees:</b> Binance.US charges 0% for limit orders and 0.02% for instant ones (since April 2026); Kraken 0.40% / 0.80% at its entry tier. The bot places limit orders first on both.</p>
         <ol class="steps">
-          <li>On kraken.com create an API key with only <b>Query funds</b>, <b>Query open orders &amp; trades</b>, <b>Query closed orders &amp; trades</b> and <b>Create &amp; modify orders</b>. Never allow withdrawals.</li>
-          <li>In your repository: <a href="${gh('settings/secrets/actions')}" target="_blank" rel="noopener">Settings › Secrets › Actions</a>, add <code>KRAKEN_API_KEY</code> and <code>KRAKEN_API_SECRET</code>.</li>
-          <li>In <a href="${gh('edit/main/data/config.json')}" target="_blank" rel="noopener">config.json</a> set <code>"live": {"enabled": true, "confirm": "REAL MONEY", "budget_usd": 100, "max_trade_usd": 100}</code>.</li>
+          <li>Create an API key on your exchange that can only read balances and place orders. Never allow withdrawals. Kraken: <b>Query funds</b>, <b>Query open orders &amp; trades</b>, <b>Query closed orders &amp; trades</b>, <b>Create &amp; modify orders</b>. Binance.US: spot trading only.</li>
+          <li>In your repository: <a href="${gh('settings/secrets/actions')}" target="_blank" rel="noopener">Settings › Secrets › Actions</a>, add <code>KRAKEN_API_KEY</code> and <code>KRAKEN_API_SECRET</code>, or <code>BINANCEUS_API_KEY</code> and <code>BINANCEUS_API_SECRET</code>.</li>
+          <li>In <a href="${gh('edit/main/data/config.json')}" target="_blank" rel="noopener">config.json</a> set <code>"live": {"enabled": true, "confirm": "REAL MONEY", "exchange": "binanceus", "budget_usd": 100, "max_trade_usd": 100}</code> (or <code>"exchange": "kraken"</code>).</li>
         </ol>
-        <p class="small muted">Currently: ${S.live_on ? `trading a ${usd(live.budget_usd, 0)} budget.` : S.has_keys ? 'keys found, live trading off.' : 'no Kraken keys saved.'} To stop, set <code>"enabled": false</code>; nothing is sold.</p>
+        <p class="small muted">Currently: ${S.live_on ? `trading a ${usd(live.budget_usd, 0)} budget on ${esc(S.exchange || '')}.` : S.has_keys ? `${esc(S.exchange || '')} keys found, live trading off.` : 'no exchange keys saved.'} To stop, set <code>"enabled": false</code>; nothing is sold.</p>
       </div>`}</div>`;
   }
 
@@ -560,28 +561,41 @@
   function renderLive() {
     if (STOCKS()) return;
     const box = $('#liveBox');
-    const st = S.live_on ? 'on' : S.has_keys ? 'keys' : 'none';
+    const st = (S.live_on ? 'on' : S.has_keys ? 'keys' : 'none') + (S.exchange || '');
     if (box.dataset.k === st) return;
     box.dataset.k = st;
+    const exName = esc(S.exchange || 'your exchange');
     if (st === 'none') {
+      const HOW = {
+        binanceus: 'On binance.us: Profile → API Management → Create API. Allow only reading and spot trading. Never turn on withdrawals. Binance.US serves California but not every state; check yours first.',
+        kraken: 'On kraken.com: Settings → API → Create API key. Turn on only <b>Query funds</b>, <b>Query open orders &amp; trades</b>, <b>Query closed orders &amp; trades</b> and <b>Create &amp; modify orders</b>. Never turn on withdrawals.',
+      };
       box.innerHTML = `<div class="stack">
-        <p class="small muted">On kraken.com: Settings → API → Create API key. Turn on only <b>Query funds</b>, <b>Query open orders &amp; trades</b>, <b>Query closed orders &amp; trades</b> and <b>Create &amp; modify orders</b>. Never turn on withdrawals. Keys are saved only on this Mac.</p>
+        <div class="choice">
+          <label class="opt"><input type="radio" name="kEx" value="binanceus" checked><div><b>Binance.US</b><span>0% for limit orders, 0.02% for instant ones (since April 2026). The cheapest by far for this bot. Binance settled with US authorities for $4.3 billion in 2023, so weigh that.</span></div></label>
+          <label class="opt"><input type="radio" name="kEx" value="kraken"><div><b>Kraken</b><span>0.40% for limit orders, 0.80% for instant ones while you trade under $2,500 a month.</span></div></label>
+        </div>
+        <p class="small muted" id="kHow"></p>
         <label>API key <input id="kKey" type="text" autocomplete="off" spellcheck="false"></label>
-        <label>Private key <input id="kSec" type="password" autocomplete="off" spellcheck="false"></label>
-        <div><button class="btn btn-ghost" id="kConnect">Connect Kraken</button></div></div>`;
+        <label>Secret key <input id="kSec" type="password" autocomplete="off" spellcheck="false"></label>
+        <p class="small muted">Keys are saved only on this Mac.</p>
+        <div><button class="btn btn-ghost" id="kConnect">Connect</button></div></div>`;
+      const exSel = () => ($$('input[name=kEx]').find((r) => r.checked) || {}).value || 'binanceus';
+      const how = () => { $('#kHow').innerHTML = HOW[exSel()]; };
+      $$('input[name=kEx]').forEach((r) => { r.onchange = how; }); how();
       $('#kConnect').onclick = async () => {
         const b = $('#kConnect'); b.disabled = true; b.textContent = 'Checking…';
-        try { const r = await api('/api/live/keys', { key: $('#kKey').value, secret: $('#kSec').value }); $('#kKey').value = ''; $('#kSec').value = ''; await refresh(); alertBox($('#liveBox'), 'Connected. ' + balanceText(r.balances), true); }
-        catch (e) { b.disabled = false; b.textContent = 'Connect Kraken'; alertBox(box, e.message); }
+        try { const r = await api('/api/live/keys', { exchange: exSel(), key: $('#kKey').value, secret: $('#kSec').value }); $('#kKey').value = ''; $('#kSec').value = ''; await refresh(); alertBox($('#liveBox'), 'Connected. ' + balanceText(r.balances), true); }
+        catch (e) { b.disabled = false; b.textContent = 'Connect'; alertBox(box, e.message); }
       };
     } else if (st === 'keys') {
       box.innerHTML = `<div class="stack">
-        <p class="ok-text">Kraken is connected. Live trading is off.</p>
+        <p class="ok-text">${exName} is connected. Live trading is off.</p>
         <div class="form-grid">
           <label>Bot budget ($) <input id="kBudget" type="number" min="20" step="10" value="${S.config.live.budget_usd}"></label>
           <label>Most it moves per coin per day ($) <input id="kCap" type="number" min="10" step="5" value="${S.config.live.max_trade_usd}"></label>
         </div>
-        <p class="small muted">The bot only trades this budget, and only sells coins it bought itself. Anything else in your Kraken account is left alone.</p>
+        <p class="small muted">The bot only trades this budget, and only sells coins it bought itself. Anything else in your ${exName} account is left alone.</p>
         <label>Type <b>REAL MONEY</b> to confirm <input id="kConfirm" type="text" autocomplete="off"></label>
         <div><button class="btn btn-danger" id="kEnable">Start live trading</button> <button class="btn btn-ghost" id="kTest">Check balance</button> <button class="btn btn-ghost" id="kForget">Remove keys</button></div></div>`;
       $('#kEnable').onclick = async () => {
@@ -591,9 +605,9 @@
       $('#kTest').onclick = async () => { try { const r = await api('/api/live/test', {}); alertBox(box, balanceText(r.balances), true); } catch (e) { alertBox(box, e.message); } };
       $('#kForget').onclick = async () => { try { await api('/api/live/forget', {}); await refresh(); } catch (e) { alertBox(box, e.message); } };
     } else {
-      box.innerHTML = `<div class="stack"><p><span class="pill pill-live">Live</span> Trading real money on Kraken with a ${usd(S.config.live.budget_usd, 0)} budget (moves at most ${usd(S.config.live.max_trade_usd, 0)} per coin per day).</p>
+      box.innerHTML = `<div class="stack"><p><span class="pill pill-live">Live</span> Trading real money on ${exName} with a ${usd(S.config.live.budget_usd, 0)} budget (moves at most ${usd(S.config.live.max_trade_usd, 0)} per coin per day).</p>
         <div><button class="btn btn-ghost" id="kDisable">Stop live trading</button></div>
-        <p class="small muted">Stopping does not sell anything. Coins the bot bought stay in your Kraken account.</p></div>`;
+        <p class="small muted">Stopping does not sell anything. Coins the bot bought stay in your ${exName} account.</p></div>`;
       $('#kDisable').onclick = async () => { try { await api('/api/live/disable', {}); await refresh(); } catch (e) { alertBox(box, e.message); } };
     }
   }

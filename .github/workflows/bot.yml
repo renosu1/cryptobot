@@ -26,6 +26,8 @@ jobs:
         env:
           KRAKEN_API_KEY: ${{ secrets.KRAKEN_API_KEY }}
           KRAKEN_API_SECRET: ${{ secrets.KRAKEN_API_SECRET }}
+          BINANCEUS_API_KEY: ${{ secrets.BINANCEUS_API_KEY }}
+          BINANCEUS_API_SECRET: ${{ secrets.BINANCEUS_API_SECRET }}
         run: python cloud/run.py
       - name: Save results
         run: |

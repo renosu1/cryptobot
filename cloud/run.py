@@ -5,9 +5,10 @@ candle has closed, record the portfolio value, update the strategy race, news an
 backtests, and write everything the dashboard needs into data/. The workflow then
 commits data/ back to the repository and GitHub Pages serves the dashboard.
 
-Settings live in data/config.json (edit it on github.com). Real-money trading needs
-KRAKEN_API_KEY and KRAKEN_API_SECRET repository secrets AND, in data/config.json,
-"live": {"enabled": true, "confirm": "REAL MONEY", "budget_usd": ..., "max_trade_usd": ...}.
+Settings live in data/config.json (edit it on github.com). Real-money trading needs the exchange's
+repository secrets (KRAKEN_API_KEY + KRAKEN_API_SECRET, or BINANCEUS_API_KEY + BINANCEUS_API_SECRET) AND,
+in data/config.json, "live": {"enabled": true, "confirm": "REAL MONEY", "exchange": "kraken" or "binanceus",
+"budget_usd": ..., "max_trade_usd": ...}.
 """
 import json, os, sys, time, traceback
 
@@ -73,13 +74,12 @@ def run_market(bot, t0):
     # first live run: the bot's real-money budget starts as cash (crypto only)
     if bot.live_on() and not bot.state['live'].get('started'):
         budget = float(bot.cfg['live'].get('budget_usd', 0))
-        bal = bot.kraken.balances()
-        usd = sum(bal.get(k, 0.0) for k in ('ZUSD', 'USD'))
+        usd = bot.ex.usd_balance(bot.ex.balances())
         if usd >= budget >= 20:
             bot.state['live'] = {'cash': budget, 'holdings': {}, 'trades': bot.state['live'].get('trades', []), 'started': time.time()}
             bot.log(f'LIVE trading ON in the cloud with a ${budget:,.0f} budget.', 'warn')
         else:
-            bot.log(f'LIVE trading NOT started: Kraken has ${usd:,.2f} USD, budget is ${budget:,.2f} (minimum $20).', 'error')
+            bot.log(f'LIVE trading NOT started: {bot.ex.NAME} has ${usd:,.2f} USD, budget is ${budget:,.2f} (minimum $20).', 'error')
             bot.cfg['live']['enabled'] = False
 
     key = json.dumps([bot.cfg['coins'], bot.cfg['strategy'], bot.cfg.get('mix'), bot.cfg['min_invested_pct']]
@@ -140,7 +140,7 @@ def main():
     os.makedirs(DATA, exist_ok=True)
     if not os.path.exists(os.path.join(DATA, 'config.json')):
         cfg = json.loads(json.dumps(server.DEFAULT_CONFIG))
-        cfg['live'] = {'enabled': False, 'confirm': '', 'budget_usd': 100.0, 'max_trade_usd': 100.0, 'limit_orders': True, 'limit_wait_min': 30}
+        cfg['live'] = {'enabled': False, 'confirm': '', 'exchange': 'kraken', 'budget_usd': 100.0, 'max_trade_usd': 100.0, 'limit_orders': True, 'limit_wait_min': 30}
         cfg.pop('port', None)
         write(os.path.join(DATA, 'config.json'), cfg)
     server.CFG = server.load_config()

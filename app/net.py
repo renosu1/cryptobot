@@ -11,19 +11,24 @@ class NetError(Exception):
     pass
 
 
-def http_request(url, data=None, headers=None, timeout=20):
+def http_request(url, data=None, headers=None, timeout=20, method=None, allow_error=False):
+    """GET (or POST when `data` is given; any other verb via `method`). With allow_error=True an HTTP error
+    returns the response body instead of raising (exchanges put the reason in the body)."""
     global _use_curl
+    method = method or ('POST' if data is not None else 'GET')
     headers = dict(headers or {})
     headers.setdefault('User-Agent', UA)
     headers.setdefault('Accept', 'application/json')
     if not _use_curl:
         try:
-            req = urllib.request.Request(url, data=data, headers=headers, method='POST' if data is not None else 'GET')
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.read().decode()
         except urllib.error.HTTPError as e:
-            body = e.read().decode(errors='replace')[:300]
-            raise NetError(f'HTTP {e.code} from {url.split("?")[0]}: {body}')
+            body = e.read().decode(errors='replace')
+            if allow_error and body:
+                return body
+            raise NetError(f'HTTP {e.code} from {url.split("?")[0]}: {body[:300]}')
         except urllib.error.URLError as e:
             if isinstance(e.reason, ssl.SSLError) or 'CERTIFICATE' in str(e.reason).upper():
                 _use_curl = True
@@ -31,7 +36,7 @@ def http_request(url, data=None, headers=None, timeout=20):
                 raise NetError(f'Could not reach {url.split("/")[2]}: {e.reason}')
         except ssl.SSLError:
             _use_curl = True
-    cmd = ['curl', '-sS', '-m', str(timeout), '-w', '\n%{http_code}']
+    cmd = ['curl', '-sS', '-m', str(timeout), '-w', '\n%{http_code}', '-X', method]
     for k, v in headers.items():
         cmd += ['-H', f'{k}: {v}']
     if data is not None:
@@ -45,7 +50,7 @@ def http_request(url, data=None, headers=None, timeout=20):
         raise NetError(f'Could not reach {url.split("/")[2]}: {p.stderr.decode(errors="replace").strip()[:200]}')
     out = p.stdout.decode(errors='replace')
     body, _, code = out.rpartition('\n')
-    if not code.startswith('2'):
+    if not code.startswith('2') and not (allow_error and body):
         raise NetError(f'HTTP {code} from {url.split("?")[0]}: {body[:300]}')
     return body
 
