@@ -258,3 +258,16 @@ a.btn { text-decoration: none; display: inline-block; }
 .portfolio-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; padding: 12px 18px; font-size: 13px; color: var(--ink-2); }
 .portfolio-bar b { color: var(--ink); font-size: 15px; }
 .portfolio-bar .muted { margin-left: auto; }
+
+/* research tables with several number columns: readable on desktop, stacked into cards on phones */
+.prose .tbl.cards td { white-space: normal; vertical-align: top; }
+.prose .tbl.cards td:first-child { min-width: 16em; }
+.prose .tbl.cards td.r { white-space: nowrap; }
+@media (max-width: 560px) {
+  .prose .tbl.cards thead { display: none; }
+  .prose .tbl.cards tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .prose .tbl.cards tr:last-child { border-bottom: 0; }
+  .prose .tbl.cards td, .prose .tbl.cards td.r { display: block; border: 0; padding: 2px 0; text-align: left; min-width: 0; white-space: normal; }
+  .prose .tbl.cards td:first-child, .prose .tbl.cards td[colspan] { grid-column: 1 / -1; }
+  .prose .tbl.cards td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; color: var(--muted); }
+}
